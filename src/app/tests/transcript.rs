@@ -92,3 +92,27 @@ fn searching_the_chat() {
     h.type_str("hi");
     assert_eq!(h.input.text(), "hi");
 }
+
+#[test]
+fn emoji_shortcodes_complete_and_expand() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.type_str("hi :wav");
+    let (_, found) = h.emoji_suggestions().unwrap();
+    assert_eq!(found[0], ("wave", "👋"));
+    h.press(KeyCode::Tab);
+    assert_eq!(h.input.text(), "hi 👋");
+    h.type_str(" :smile: see https://x.com/:smile:");
+    h.take_effects();
+    h.press(KeyCode::Enter);
+    let sent = "hi 👋 😄 see https://x.com/:smile:";
+    assert!(h.sent().contains(&ClientMessage::SendMessage(sent.into())));
+    assert_eq!(h.last_entry(), &EntryKind::You(sent.into()));
+
+    // Turned off, shortcodes are sent as typed and Tab does its usual job.
+    h.config.settings.emoji_shortcodes = false;
+    h.type_str(":smile:");
+    h.press(KeyCode::Enter);
+    assert!(h.sent().contains(&ClientMessage::SendMessage(":smile:".into())));
+    h.type_str(":sm");
+    assert!(h.emoji_suggestions().is_none());
+}

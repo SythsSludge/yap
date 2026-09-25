@@ -3,10 +3,13 @@
 
 pub mod app;
 pub mod catalog;
+pub mod chat_export;
 pub mod commands;
 pub mod config;
 pub mod drawer;
+pub mod emoji;
 pub mod fuzzy;
+pub mod glossary;
 pub mod images;
 pub mod input;
 pub mod keymap;

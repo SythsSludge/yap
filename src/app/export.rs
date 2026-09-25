@@ -1,6 +1,7 @@
 //! Import/export of profiles and settings, chat log files and traffic dumps.
 
 use super::*;
+use crate::chat_export::{self, Doc, Format};
 
 impl App {
     pub fn export(&mut self, profile: Option<&str>, path: &str) {
@@ -61,25 +62,47 @@ impl App {
         self.visible_logs().get(self.logs_ui.list.selected).copied()
     }
 
+    /// Save a chat from the Logs tab; the extension picks the format (.txt, .md, .html).
     pub fn export_log(&mut self, index: usize, path: &str) {
         let path = config::expand_tilde(path);
-        let result = (|| -> anyhow::Result<()> {
-            self.logs.open(index)?;
-            let text = self.logs.items[index].transcript().ok_or_else(|| anyhow::anyhow!("chat isn't loaded"))?;
-            config::write_atomic(&path, &text)
-        })();
+        let result = self.logs.open(index).map(|_| ()).and_then(|()| {
+            let conv = &self.logs.items[index];
+            let (you, partner) = conv.names();
+            let doc = Doc {
+                title: format!("Chat with {}", conv.title()),
+                started: Some(conv.started),
+                you,
+                partner,
+                entries: conv.loaded_entries().unwrap_or_default(),
+                images: &|text| self.preview_urls(text),
+            };
+            config::write_atomic(&path, &chat_export::render(&doc, Format::from_path(&path)))
+        });
         match result {
             Ok(()) => self.toast(Level::Success, format!("Saved transcript to {}", path.display())),
             Err(e) => self.toast(Level::Error, format!("Couldn't save transcript: {e:#}")),
         }
     }
 
+    /// `/log <path>`: save the chat view; the extension picks the format.
     pub(super) fn save_log(&mut self, path: &str) {
         let path = config::expand_tilde(path);
         let you =
             Some(self.config.active().character.clone()).filter(|c| !c.is_empty()).unwrap_or_else(|| "You".into());
         let partner = self.partner_nick.clone().unwrap_or_else(|| "Partner".into());
-        match config::write_atomic(&path, &self.chat.transcript(&you, &partner)) {
+        let title = match self.logs.live(self.session_id) {
+            Some(conv) => format!("Chat with {}", conv.title()),
+            None => "Chat".into(),
+        };
+        let doc = Doc {
+            title,
+            started: self.chat.entries.first().map(|e| e.at),
+            you,
+            partner,
+            entries: &self.chat.entries,
+            images: &|text| self.preview_urls(text),
+        };
+        match config::write_atomic(&path, &chat_export::render(&doc, Format::from_path(&path))) {
             Ok(()) => self.toast(Level::Success, format!("Saved transcript to {}", path.display())),
             Err(e) => self.toast(Level::Error, format!("Couldn't save transcript: {e:#}")),
         }

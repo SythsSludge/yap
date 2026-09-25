@@ -205,7 +205,7 @@ impl App {
             KeyCode::Char('e') => {
                 let started = self.logs.items[index].started.format("%Y%m%d-%H%M%S");
                 let path = self.default_path(&format!("yap-chat-{started}.txt"));
-                self.open_prompt("Save transcript to", &path, PromptAction::ExportLog(index));
+                self.open_prompt("Save transcript to (.txt, .md or .html)", &path, PromptAction::ExportLog(index));
             }
             KeyCode::Char('p') => {
                 let pinned = self.logs.toggle_pin(index);

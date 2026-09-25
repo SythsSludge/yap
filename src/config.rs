@@ -150,6 +150,8 @@ pub struct Settings {
     pub transparent_background: bool,
     /// Show `*actions*` in italics and `((asides))` dimmed. Display only.
     pub rp_formatting: bool,
+    /// Turn `:smile:` into the emoji when sending, and complete shortcodes with Tab.
+    pub emoji_shortcodes: bool,
     /// Start each partner in a fresh chat view instead of one endless scroll. Earlier
     /// chats stay available in the Logs tab either way.
     pub split_chats: bool,
@@ -187,6 +189,7 @@ impl Default for Settings {
             chat_style: ChatStyle::default(),
             transparent_background: false,
             rp_formatting: true,
+            emoji_shortcodes: true,
             split_chats: false,
             save_logs: false,
             show_sidebar: true,

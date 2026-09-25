@@ -90,3 +90,26 @@ fn stats_count_the_session_and_persist() {
     h.press(KeyCode::Char('x'));
     assert!(h.modal.is_none());
 }
+
+#[test]
+fn kinks_popup_opens_from_command_key_and_sidebar() {
+    let mut h = harness().online().with_prefs();
+    h.type_str("/kinks");
+    h.press(KeyCode::Enter);
+    assert!(matches!(h.modal, Some(Modal::Kinks { scroll: 0 })), "works without a partner too");
+    h.press(KeyCode::Down);
+    assert!(matches!(h.modal, Some(Modal::Kinks { scroll: 1 })));
+    h.press(KeyCode::Esc);
+    assert!(h.modal.is_none());
+
+    let mut h = h.partnered();
+    let groups = h.kink_groups().unwrap();
+    assert_eq!(groups.shared, ["Musk", "Biting"]);
+    assert_eq!(groups.theirs, ["Tickling"]);
+    alt(&mut h, 'k');
+    assert!(matches!(h.modal, Some(Modal::Kinks { .. })));
+    h.press(KeyCode::Esc);
+    frame(&mut h);
+    click_on(&mut h, &Hit::Kinks);
+    assert!(matches!(h.modal, Some(Modal::Kinks { .. })));
+}

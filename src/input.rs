@@ -81,6 +81,13 @@ impl LineEditor {
         self.cursor += s.len();
     }
 
+    /// Replace the text from byte offset `start` up to the cursor.
+    pub fn replace_to_cursor(&mut self, start: usize, with: &str) {
+        let with = flatten(with);
+        self.text.replace_range(start..self.cursor, &with);
+        self.cursor = start + with.len();
+    }
+
     fn prev_boundary(&self, from: usize) -> usize {
         self.text[..from].grapheme_indices(true).next_back().map_or(0, |(i, _)| i)
     }

@@ -119,6 +119,14 @@ impl App {
                 }
             }
             Modal::Stats => None,
+            Modal::Kinks { scroll } => match key.code {
+                KeyCode::Up | KeyCode::Char('k') => Some(Modal::Kinks { scroll: scroll.saturating_sub(1) }),
+                KeyCode::Down | KeyCode::Char('j') => Some(Modal::Kinks { scroll: scroll.saturating_add(1) }),
+                KeyCode::PageUp => Some(Modal::Kinks { scroll: scroll.saturating_sub(10) }),
+                KeyCode::PageDown | KeyCode::Char(' ') => Some(Modal::Kinks { scroll: scroll.saturating_add(10) }),
+                KeyCode::Home | KeyCode::Char('g') => Some(Modal::Kinks { scroll: 0 }),
+                _ => None,
+            },
             Modal::Palette { mut query, mut selected } => {
                 let len = self.palette_matches(&query).len();
                 match key.code {

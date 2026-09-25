@@ -56,6 +56,8 @@ fn full_partner_lifecycle_matches_web_client() {
     assert_eq!(h.last_entry(), &EntryKind::You("hello!".into()));
     assert!(h.input.is_empty());
 
+    // Long enough ago that it certainly arrived (see `messages_sent_as_the_partner_leaves_are_flagged`).
+    h.chat.entries.iter_mut().for_each(|e| e.at -= chrono::TimeDelta::seconds(10));
     h.server(ServerMessage::PartnerLeft);
     assert!(!h.has_partner());
     assert_eq!(h.last_entry(), &EntryKind::System("Your yiffing partner has left.".into()));
@@ -264,4 +266,59 @@ fn server_url_prompt_validates_and_reconnects() {
     h.type_str("gopher://x");
     h.press(KeyCode::Enter);
     assert!(h.last_toast().unwrap().contains("unsupported scheme"));
+}
+
+#[test]
+fn clock_times_the_search_the_partner_and_their_typing() {
+    let mut h = harness().online().with_prefs();
+    h.config.active_mut().preferences.toggle(Field::Limits, "Scat");
+    h.ctrl('f');
+    let searched = h.now;
+    assert_eq!(h.clock.searching_since, Some(searched));
+    // An auto-skip searches again without restarting the search timer.
+    h.now += Duration::from_secs(20);
+    connected_to(&mut h, "Scat", None);
+    assert_eq!(h.partner, PartnerState::Searching);
+    assert_eq!(h.clock.searching_since, Some(searched));
+
+    h.now += Duration::from_secs(20);
+    connected_to(&mut h, "Musk", None);
+    let met = h.now;
+    assert_eq!(h.clock, Clock { partner_since: Some(met), ..Clock::default() });
+
+    h.now += Duration::from_secs(5);
+    h.server(ServerMessage::PartnerTyping(true));
+    let typing = h.now;
+    h.now += Duration::from_secs(5);
+    h.server(ServerMessage::PartnerTyping(true));
+    assert_eq!(h.clock.typing_since, Some(typing), "repeated typing frames don't restart it");
+    h.server(ServerMessage::ReceiveMessage("hi".into()));
+    assert_eq!(h.clock.typing_since, None);
+    assert_eq!(h.clock.last_heard, Some(h.now));
+
+    h.server(ServerMessage::PartnerLeft);
+    assert_eq!(h.clock, Clock::default());
+}
+
+#[test]
+fn messages_sent_as_the_partner_leaves_are_flagged() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.type_str("earlier");
+    h.press(KeyCode::Enter);
+    h.chat.entries.iter_mut().for_each(|e| e.at -= chrono::TimeDelta::seconds(10));
+    h.type_str("still there?");
+    h.press(KeyCode::Enter);
+    let last = h.chat.entries.len() - 1;
+    h.server(ServerMessage::PartnerLeft);
+    assert_eq!(h.chat.unsure, [last], "only the message sent just before they left");
+    assert!(
+        matches!(h.last_entry(), EntryKind::Warning(t) if t.starts_with("Your last message may not have reached them"))
+    );
+
+    // Nothing to flag when you'd been quiet.
+    let mut h = h.partnered();
+    h.chat.clear();
+    h.server(ServerMessage::PartnerDisconnected);
+    assert!(h.chat.unsure.is_empty());
+    assert!(matches!(h.last_entry(), EntryKind::System(_)));
 }

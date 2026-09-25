@@ -61,6 +61,8 @@ pub enum Command {
     Select,
     /// Show chat statistics.
     Stats,
+    /// Show the partner's kinks with definitions.
+    Kinks,
     DrawerExport(String),
     DrawerImport(String),
 }
@@ -94,12 +96,13 @@ pub const HELP: &[(&str, &str)] = &[
     ("/drawer-import <path>", "import links and snippets"),
     ("/trust <domain>", "allow image previews from a domain"),
     ("/untrust <domain>", "stop image previews from a domain"),
-    ("/log <path>", "save this chat's transcript"),
+    ("/log <path>", "save this chat (.txt, .md or .html)"),
     ("/raw <json>", "send a raw websocket frame"),
     ("/links", "pick a link from the chat"),
     ("/search [text]", "search this chat"),
     ("/select", "select a message to quote, copy or save"),
     ("/stats", "partners met, time chatting and more"),
+    ("/kinks", "your partner's kinks next to yours, with what each means"),
     ("/logs", "browse earlier chats"),
     ("/drawer", "toggle the drawer"),
     ("/new", "open another chat alongside this one"),
@@ -110,6 +113,32 @@ pub const HELP: &[(&str, &str)] = &[
     ("/quit", "exit"),
     ("//text", "send a message starting with /"),
 ];
+
+/// Commands whose name starts with what's been typed so far (`/lo` finds `/log` and
+/// `/logs`), in help order. Only while typing the name itself.
+pub fn completions(typed: &str) -> Vec<(&'static str, &'static str)> {
+    if !typed.starts_with('/') || typed.starts_with("//") || typed.contains(char::is_whitespace) {
+        return Vec::new();
+    }
+    let typed = typed.to_ascii_lowercase();
+    HELP.iter()
+        .filter(|(syntax, _)| !syntax.starts_with("//") && name_of(syntax).starts_with(&typed))
+        .copied()
+        .collect()
+}
+
+/// The command from its help syntax: `/log <path>` is `/log`.
+pub fn name_of(syntax: &str) -> &str {
+    syntax.split_once(' ').map_or(syntax, |(name, _)| name)
+}
+
+/// What Tab turns the typed text into: the first completion, with a space after it
+/// if the command takes something.
+pub fn complete(typed: &str) -> Option<String> {
+    let (syntax, _) = *completions(typed).first()?;
+    let name = name_of(syntax);
+    Some(if name.len() < syntax.len() { format!("{name} ") } else { name.to_owned() })
+}
 
 pub fn parse(input: &str) -> Parsed {
     let Some(rest) = input.strip_prefix('/') else {
@@ -143,6 +172,7 @@ pub fn parse(input: &str) -> Parsed {
         "search" | "grep" => Parsed::Command(Command::Search(opt())),
         "select" | "quote" => Parsed::Command(Command::Select),
         "stats" => Parsed::Command(Command::Stats),
+        "kinks" | "define" => Parsed::Command(Command::Kinks),
         "drawer-export" => need("a file path", Command::DrawerExport),
         "drawer-import" => need("a file path", Command::DrawerImport),
         "leave" | "disconnect" | "dc" => Parsed::Command(Command::Leave),
@@ -246,5 +276,17 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), n);
+    }
+
+    #[test]
+    fn tab_completes_command_names() {
+        assert_eq!(complete("/lo").as_deref(), Some("/log "), "takes a path, so a space follows");
+        assert_eq!(complete("/logs").as_deref(), Some("/logs"));
+        assert_eq!(complete("/ST").as_deref(), Some("/stats"));
+        assert_eq!(completions("/lo").iter().map(|(s, _)| name_of(s)).collect::<Vec<_>>(), ["/log", "/logs"]);
+        assert_eq!(complete("/nope"), None);
+        assert_eq!(complete("/log file"), None, "only while typing the name");
+        assert_eq!(complete("//"), None);
+        assert_eq!(complete("hi"), None);
     }
 }

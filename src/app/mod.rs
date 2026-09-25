@@ -10,6 +10,7 @@ mod compose;
 mod connection;
 mod export;
 mod keys;
+mod kinks;
 mod matching;
 mod media;
 pub mod modal;
@@ -17,12 +18,14 @@ mod mouse;
 mod names;
 mod palette;
 mod profiles;
+mod reload;
 mod sessions;
 pub mod settings;
 mod snippets;
 mod transcript;
 
 pub use compose::{join_paragraphs, split_paragraphs};
+pub use kinks::KinkGroups;
 pub use mouse::{Hit, ListId, ViewerButton};
 pub use palette::{PaletteEntry, PaletteItem};
 pub use sessions::{Session, SessionSummary};
@@ -57,6 +60,8 @@ use std::time::{Duration, Instant};
 pub const TYPING_IDLE: Duration = Duration::from_secs(5);
 const TOAST_TTL: Duration = Duration::from_secs(6);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
+/// Messages sent this soon before a partner leaves may have been dropped.
+const UNDELIVERED_WINDOW: chrono::TimeDelta = chrono::TimeDelta::seconds(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -144,6 +149,19 @@ pub enum PartnerState {
     None,
     Searching,
     Connected(PartnerInfo),
+}
+
+/// When things happened with the current partner, for the sidebar's timers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Clock {
+    /// Matched with the current partner.
+    pub partner_since: Option<Instant>,
+    /// The partner's last message.
+    pub last_heard: Option<Instant>,
+    /// The partner started typing.
+    pub typing_since: Option<Instant>,
+    /// Started looking for a partner.
+    pub searching_since: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,6 +268,7 @@ pub struct App {
     requeue_at: Option<Instant>,
     skips: u32,
     pub partner_nick: Option<String>,
+    pub clock: Clock,
     /// Sessions not on screen.
     pub others: Vec<Session>,
     next_session: u64,
@@ -293,6 +312,8 @@ pub struct App {
     pub quit: bool,
     dirty_config: bool,
     dirty_drawer: bool,
+    /// Outside edits to the config and themes (see `reload.rs`).
+    watch: reload::Watch,
 }
 
 impl App {
@@ -300,6 +321,7 @@ impl App {
         let theme =
             effective_theme(pick_theme(&themes, &config.settings.theme), config.settings.transparent_background);
         let traffic = TrafficLog::new(config.settings.traffic.capacity);
+        let watch = reload::Watch::new(&paths);
         let profile = config.profiles.iter().position(|p| p.name == config.active_profile).unwrap_or(0);
         let Session {
             id,
@@ -317,6 +339,7 @@ impl App {
             requeue_at,
             skips,
             partner_nick,
+            clock,
         } = Session::new(0);
         App {
             paths,
@@ -339,6 +362,7 @@ impl App {
             requeue_at,
             skips,
             partner_nick,
+            clock,
             others: Vec::new(),
             next_session: 1,
             background: false,
@@ -373,6 +397,7 @@ impl App {
             quit: false,
             dirty_config: false,
             dirty_drawer: false,
+            watch,
             config,
         }
     }
@@ -443,10 +468,11 @@ impl App {
 
     /// Persist anything that changed. Called by the runtime after each batch of events.
     pub fn flush(&mut self) {
-        if std::mem::take(&mut self.dirty_config)
-            && let Err(e) = self.config.save(&self.paths.config_file)
-        {
-            self.toast(Level::Error, format!("couldn't save settings: {e:#}"));
+        if std::mem::take(&mut self.dirty_config) {
+            match self.config.save(&self.paths.config_file) {
+                Ok(()) => self.config_saved(),
+                Err(e) => self.toast(Level::Error, format!("couldn't save settings: {e:#}")),
+            }
         }
         if std::mem::take(&mut self.dirty_drawer)
             && let Err(e) = self.drawer.save(&self.paths.drawer_file)

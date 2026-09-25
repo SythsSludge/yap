@@ -1,4 +1,4 @@
-//! Writing long messages in an external editor.
+//! Writing messages: long ones in an external editor, and emoji shortcodes.
 
 use super::*;
 
@@ -36,6 +36,30 @@ pub fn split_paragraphs(text: &str, paragraph_break: &str) -> String {
 }
 
 impl App {
+    /// The shortcode being typed at the cursor and what it could become.
+    pub fn emoji_suggestions(&self) -> Option<(usize, Vec<(&'static str, &'static str)>)> {
+        if !self.config.settings.emoji_shortcodes {
+            return None;
+        }
+        let (start, word) = crate::emoji::partial(self.input.text(), self.input.cursor())?;
+        let found = crate::emoji::suggest(word, 8);
+        (!found.is_empty()).then_some((start, found))
+    }
+
+    /// Tab while typing `/lo`: complete the first matching command.
+    pub(super) fn complete_command(&mut self) -> bool {
+        let Some(done) = crate::commands::complete(self.input.text()) else { return false };
+        self.input.set(&done);
+        true
+    }
+
+    /// Tab while typing `:smi`: swap in the first suggestion. False if there's nothing to complete.
+    pub(super) fn complete_emoji(&mut self) -> bool {
+        let Some((start, found)) = self.emoji_suggestions() else { return false };
+        self.input.replace_to_cursor(start, found[0].1);
+        true
+    }
+
     /// `$VISUAL`, then `$EDITOR`, then `vi`, unless a command is set in Settings.
     pub fn editor_command(&self) -> String {
         let configured = self.config.settings.editor.trim();

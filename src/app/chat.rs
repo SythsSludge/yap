@@ -107,6 +107,9 @@ pub struct Chat {
     pub last_total: usize,
     pub last_height: usize,
     pub mode: ChatMode,
+    /// Your messages (entry indices) sent so close to the partner leaving that they
+    /// may never have arrived.
+    pub unsure: Vec<usize>,
 }
 
 impl Chat {
@@ -119,6 +122,7 @@ impl Chat {
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.unsure.clear();
         self.mode = ChatMode::Normal;
         self.follow();
     }

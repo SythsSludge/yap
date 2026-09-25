@@ -39,6 +39,20 @@ indicator, block, disconnect, themes, notifications), plus the following:
   highlighted matches.
 - **Command palette**: `ctrl+k` fuzzy-searches every action, command, setting, profile,
   theme, snippet and open chat.
+- **Kinks, explained**: every kink on the site has a one-line definition, shown under
+  the highlighted kink in Preferences. `alt+k` (or `/kinks`, or a click on the sidebar's
+  list) sets your partner's kinks against yours: shared, theirs only, and yours they
+  didn't list, each with what it means. The definitions ship with yap, so looking one
+  up never touches the network.
+- **Partner timers**: the sidebar shows how long you've been chatting, when your partner
+  last said something (in amber after five quiet minutes), how long they've been typing,
+  and how long you've been searching. Shared kinks are listed first.
+- **Lost message warnings**: the server silently drops messages to a partner who has
+  already gone. Anything you sent in the two seconds before they left is marked *may
+  not have arrived*, so you know to copy it before starting over.
+- **Emoji shortcodes**: `:smile:` is sent as 😄 (GitHub/Slack names). While typing
+  `:smi…`, suggestions appear above the input and `Tab` takes the first one. Turn it
+  off in *Settings → Emoji shortcodes*.
 - **Stats**: `/stats` shows partners met, auto-skips, messages and time chatting, for
   this session and all time. Kept locally.
 - **Mouse**: click tabs, chats, list rows (double-click to activate), messages to open
@@ -88,6 +102,7 @@ keypress (a ratatui-image limitation). Turning off *Settings → Image previews*
 | `Ctrl-K` | command palette |
 | `Alt-M` | select a message (quote, copy, save) |
 | `Alt-/` | search this chat |
+| `Alt-K` | your partner's kinks next to yours, explained |
 | `Alt-N` / `Alt-W` | open / close a chat |
 | `Ctrl-PgUp` / `Ctrl-PgDn` | previous / next chat |
 | `Ctrl-D` | leave partner; while searching, stop searching |
@@ -119,8 +134,11 @@ and the rest of the config still loads.
 
 The chat box also takes commands: `/find`, `/leave`, `/block`, `/save <url> [label]`,
 `/profile [name]`, `/theme [name]`, `/export <path>`, `/import <path>`, `/trust <domain>`,
-`/log <path>`, `/raw <json>`, and more (`/help`). Start a message with `//` to send a
-literal `/`.
+`/log <path>`, `/kinks`, `/raw <json>`, and more (`/help`). `/log` and the Logs tab's
+export pick the format from the extension: `.txt`, `.md`, or `.html` (a standalone page
+that keeps the roleplay formatting and shows images from trusted hosts). Start a message with `//` to send a
+literal `/`. While you type a command, matching ones are listed above the input, and
+`Tab` completes the first: `/lo` becomes `/log `.
 
 ## Files
 
@@ -135,6 +153,10 @@ literal `/`.
 - `~/.local/share/yap/logs/*.jsonl`: chat logs, one file per partner, only when *Save chat
   logs to disk* is on. The folder is private (0700) and the files are 0600. Deleting a chat
   in the Logs tab deletes its file.
+
+`config.toml` and the themes folder are watched while yap runs, so edits made in
+another editor apply within a second. A config file with a mistake in it is reported,
+and the current settings are kept.
 
 ### Snippets
 

@@ -54,6 +54,8 @@ pub enum Hit {
     Input,
     DrawerTag(Option<String>),
     Shelf(Shelf),
+    /// The partner's kinks in the sidebar.
+    Kinks,
 }
 
 impl App {
@@ -115,6 +117,7 @@ impl App {
                 self.drawer_ui.list.selected = 0;
             }
             Hit::Shelf(shelf) => self.drawer_ui.shelf = shelf,
+            Hit::Kinks => self.open_kinks(),
             Hit::Viewer(button) => self.viewer_button(button),
             Hit::Row { list, index } => self.click_row(list, index, double),
         }

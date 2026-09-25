@@ -89,6 +89,10 @@ pub enum Modal {
     },
     /// Chat statistics.
     Stats,
+    /// The partner's kinks (or yours, with no partner), with definitions.
+    Kinks {
+        scroll: u16,
+    },
     /// Pick a snippet to insert; typing filters.
     Snippets {
         filter: String,

@@ -71,6 +71,7 @@ fn messages_layout() {
 #[test]
 fn logs_screen() {
     let mut h = chatting();
+    h.chat.entries.iter_mut().for_each(|e| e.at -= chrono::TimeDelta::seconds(10));
     h.server(ServerMessage::PartnerLeft);
     // The list and title show when the chat happened; pin it so the snapshot is stable.
     for conv in &mut h.logs.items {
@@ -321,4 +322,41 @@ fn thousands_separators() {
     assert_eq!(super::thousands(999), "999");
     assert_eq!(super::thousands(1_000), "1,000");
     assert_eq!(super::thousands(1_234_567), "1,234,567");
+}
+
+#[test]
+fn undelivered_messages_are_marked() {
+    let mut h = chatting();
+    h.type_str("you still there?");
+    h.press(KeyCode::Enter);
+    h.server(ServerMessage::PartnerLeft);
+    let screen = render(&mut h, 110, 30);
+    assert!(screen.contains("may not have arrived"), "{screen}");
+}
+
+#[test]
+fn kinks_popup() {
+    let mut h = chatting();
+    h.toasts.clear();
+    h.run_command(crate::commands::Command::Kinks);
+    insta::assert_snapshot!(render(&mut h, 90, 20));
+}
+
+#[test]
+fn emoji_suggestions_above_the_input() {
+    let mut h = chatting();
+    h.type_str("hi :wav");
+    let screen = render(&mut h, 110, 30);
+    assert!(screen.contains("tab"), "{screen}");
+    assert!(screen.contains(":wave:"), "{screen}");
+}
+
+#[test]
+fn command_hints_mark_what_tab_takes() {
+    let mut h = chatting();
+    h.type_str("/lo");
+    let screen = render(&mut h, 110, 30);
+    let tab_line = screen.lines().find(|l| l.contains("tab /log <path>")).unwrap_or_else(|| panic!("{screen}"));
+    assert!(tab_line.contains("save this chat"));
+    assert!(screen.contains("/logs"));
 }

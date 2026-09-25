@@ -103,7 +103,10 @@ fn draw_options(frame: &mut Frame, app: &App, area: Rect) {
         title.push(Span::styled(format!(" · {n} selected"), t.muted()));
     }
     let inner = section(frame, app, area, Line::from(title), focused);
-    let [list_area, filter_area] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+    // Kinks get a line or two saying what the highlighted one means.
+    let meaning_rows = if field == Field::Kinks && focused { 3 } else { 0 };
+    let [list_area, meaning_area, filter_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(meaning_rows), Constraint::Length(1)]).areas(inner);
     if focused {
         let filter = if app.prefs_ui.filter.is_empty() {
             Span::styled("type to filter", t.muted().add_modifier(Modifier::DIM))
@@ -134,4 +137,11 @@ fn draw_options(frame: &mut Frame, app: &App, area: Rect) {
         .collect();
     let selected = focused.then(|| app.prefs_ui.option.min(options.len() - 1));
     render_list(frame, app, list_area, items, Rows::new(ListId::PrefsOptions, selected, focused));
+    if let Some(meaning) = selected.and_then(|i| crate::glossary::define(options[i])) {
+        let text = Paragraph::new(Span::styled(meaning, t.muted())).wrap(Wrap { trim: true });
+        frame.render_widget(
+            text,
+            Rect { y: meaning_area.y + 1, height: meaning_area.height.saturating_sub(1), ..meaning_area },
+        );
+    }
 }

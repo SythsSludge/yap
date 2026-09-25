@@ -89,6 +89,8 @@ impl App {
             Err(invalid) => return self.show_invalid(invalid),
         };
         let had_partner = self.has_partner();
+        // Auto-skips search again mid-search; keep counting from the first search.
+        let searching_since = if self.partner == PartnerState::Searching { self.clock.searching_since } else { None };
         if !self.send(ClientMessage::FindPartner(wire)) {
             return;
         }
@@ -99,6 +101,7 @@ impl App {
         self.reset_partner();
         self.can_block_previous = had_partner;
         self.partner = PartnerState::Searching;
+        self.clock.searching_since = searching_since.or(Some(self.now));
         self.requeue_at = None;
         if !self.background {
             self.tab = Tab::Chat;
@@ -149,6 +152,7 @@ impl App {
     }
 
     fn send_chat(&mut self, text: String) {
+        let text = if self.config.settings.emoji_shortcodes { crate::emoji::expand(&text) } else { text };
         // Same checks, order and messages as the web client. JS counts UTF-16 units.
         if text.is_empty() {
             return self.toast(Level::Error, "Please enter a message.");
@@ -200,6 +204,7 @@ impl App {
         let now = self.now;
         self.toasts.retain(|t| t.expires > now);
         self.tick_sessions();
+        self.tick_reload();
     }
 
     /// Timers for the current session: typing idle and reconnect backoff.
@@ -262,6 +267,7 @@ impl App {
             Command::Search(query) => self.start_search(query.as_deref()),
             Command::Select => self.select_message(None),
             Command::Stats => self.modal = Some(Modal::Stats),
+            Command::Kinks => self.open_kinks(),
             Command::DrawerExport(path) => self.export_drawer(&path),
             Command::DrawerImport(path) => self.import_drawer(&path),
             Command::NewChat => self.new_session(),

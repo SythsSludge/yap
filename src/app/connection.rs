@@ -24,6 +24,7 @@ impl App {
         self.partner = PartnerState::None;
         self.chat.partner_typing = false;
         self.typing_sent = false;
+        self.clock = Clock::default();
     }
 
     fn backoff(&self) -> Duration {
@@ -74,6 +75,7 @@ impl App {
             self.push(EntryKind::Warning(format!("Disconnected from the server: {reason}. {hint}")));
         }
         if had_partner {
+            self.flag_undelivered("the connection dropped");
             self.end_conversation();
         }
         self.status = ConnStatus::Offline { reason, retry_at };
@@ -95,6 +97,8 @@ impl App {
             ServerMessage::ReceiveMessage(text) => {
                 let text = crate::text::sanitize(&text);
                 self.chat.partner_typing = false;
+                self.clock.typing_since = None;
+                self.clock.last_heard = Some(self.now);
                 self.request_images(&text);
                 self.count(|s| s.received += 1);
                 let mentioned = !crate::text::find_keywords(&text, &self.config.settings.notify.keywords).is_empty();
@@ -107,10 +111,13 @@ impl App {
             }
             ServerMessage::PartnerTyping(on) => {
                 self.chat.partner_typing = on && self.has_partner();
+                self.clock.typing_since =
+                    if self.chat.partner_typing { self.clock.typing_since.or(Some(self.now)) } else { None };
             }
             ServerMessage::PartnerConnected(info) => self.on_partner_connected(info),
             ServerMessage::PartnerPending => {
                 self.partner = PartnerState::Searching;
+                self.clock.searching_since.get_or_insert(self.now);
                 self.system(
                     "We are looking for a partner to match you with. \
                      Please either continue to wait, or modify your yiffing preferences.",
@@ -120,6 +127,7 @@ impl App {
                 self.reset_partner();
                 self.can_block_previous = true;
                 self.system("Your yiffing partner has left.");
+                self.flag_undelivered("they left");
                 self.end_conversation();
                 self.alert("Partner Left");
                 self.schedule_requeue();
@@ -128,6 +136,7 @@ impl App {
                 self.reset_partner();
                 self.can_block_previous = false;
                 self.system("Your yiffing partner has disconnected unexpectedly.");
+                self.flag_undelivered("they disconnected");
                 self.end_conversation();
                 self.schedule_requeue();
                 self.alert("Partner Disconnected");
@@ -169,6 +178,29 @@ impl App {
         }
     }
 
+    /// The server silently drops messages for a partner who's already gone, so flag
+    /// ours from the moments before we heard about it (`what` happened).
+    fn flag_undelivered(&mut self, what: &str) {
+        let now = Local::now();
+        let recent: Vec<usize> = (0..self.chat.entries.len())
+            .rev()
+            .take_while(|&i| now - self.chat.entries[i].at <= UNDELIVERED_WINDOW)
+            .filter(|&i| matches!(self.chat.entries[i].kind, EntryKind::You(_)))
+            .collect();
+        if recent.is_empty() {
+            return;
+        }
+        self.chat.unsure.extend(&recent);
+        let mut text = match recent.len() {
+            1 => format!("Your last message may not have reached them: it was sent just as {what}."),
+            n => format!("Your last {n} messages may not have reached them: they were sent just as {what}."),
+        };
+        if let Some(key) = self.keymap.hint(crate::keymap::Action::SelectMessage) {
+            text.push_str(&format!(" {key} then y copies one."));
+        }
+        self.push(EntryKind::Warning(text));
+    }
+
     fn on_partner_connected(&mut self, info: PartnerInfo) {
         let info = PartnerInfo {
             gender: crate::text::sanitize(&info.gender),
@@ -201,6 +233,7 @@ impl App {
         }
         self.push(EntryKind::PartnerInfo { info: info.clone(), common });
         self.partner = PartnerState::Connected(info);
+        self.clock.partner_since = Some(self.now);
         self.can_block_previous = false;
         if !self.background {
             self.tab = Tab::Chat;

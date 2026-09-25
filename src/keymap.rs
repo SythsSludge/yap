@@ -67,6 +67,7 @@ actions! {
     Editor => "editor", "Write the message in your editor", ["ctrl+x"];
     SelectMessage => "select-message", "Select a message to quote, copy or save", ["alt+m"];
     SearchChat => "search-chat", "Search this chat", ["alt+/"];
+    Kinks => "kinks", "Kinks, explained: your partner's next to yours", ["alt+k"];
     Drawer => "drawer", "Toggle the drawer panel", ["ctrl+e"];
     Profile => "profile", "Switch profile", ["ctrl+p"];
     Theme => "theme", "Switch theme", ["ctrl+t"];

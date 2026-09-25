@@ -102,3 +102,22 @@ fn logs_pin_rename_and_search() {
     h.press(KeyCode::Enter);
     assert_eq!(h.visible_logs(), vec![0]);
 }
+
+#[test]
+fn chats_save_as_markdown_or_html_by_extension() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.server(ServerMessage::ReceiveMessage("*waves* hi".into()));
+    let dir = h._dir.path().to_owned();
+    let save = |h: &mut Harness, name: &str| {
+        h.run_command(crate::commands::Command::SaveLog(dir.join(name).display().to_string()));
+        std::fs::read_to_string(dir.join(name)).unwrap()
+    };
+    let html = save(&mut h, "chat.html");
+    assert!(html.contains("<title>Chat with Dominant Female Fox</title>"));
+    assert!(html.contains("<em>*waves*</em> hi"));
+    let md = save(&mut h, "chat.md");
+    assert!(md.starts_with("# Chat with Dominant Female Fox"));
+    assert!(md.contains("**Partner** · "), "{md}");
+    let txt = save(&mut h, "chat.txt");
+    assert!(txt.contains("] Partner: *waves* hi"));
+}

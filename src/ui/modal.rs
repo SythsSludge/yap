@@ -3,6 +3,7 @@
 use super::centered;
 use crate::app::modal::Modal;
 use crate::app::{App, Hit, ListId, ViewerButton};
+use crate::catalog::ANY;
 use crate::commands::HELP;
 use crate::links::{Trust, check_trust, looks_like_image};
 use crate::text::truncate;
@@ -30,6 +31,60 @@ fn frame_block<'a>(app: &App, title: &'a str) -> Block<'a> {
         .title(Span::styled(format!(" {} ", title.to_lowercase()), Style::new().fg(t.accent).bold()))
         .padding(ratatui::widgets::Padding::horizontal(1))
         .style(Style::new().bg(t.surface).fg(t.fg))
+}
+
+/// The kinks popup: the partner's list against yours, each with its definition.
+fn kink_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    let t = &app.theme;
+    let mut lines = Vec::new();
+    let mut group = |heading: String, kinks: &[String], name_style: Style| {
+        if kinks.is_empty() {
+            return;
+        }
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.push(Line::from(Span::styled(heading, Style::new().fg(t.accent).bold())));
+        for kink in kinks {
+            let (name, meaning) = if kink == ANY {
+                ("Any / All", "Open to anything on the list.")
+            } else {
+                (kink.as_str(), crate::glossary::define(kink).unwrap_or(""))
+            };
+            let spans = [
+                Span::styled(format!("{name}  "), name_style),
+                Span::styled(meaning.to_owned(), Style::new().fg(t.muted)),
+            ];
+            // Hanging indent: definitions that wrap line up under the name.
+            lines.extend(crate::text::wrap(&spans, width.saturating_sub(2), 2).into_iter().enumerate().map(
+                |(i, mut l)| {
+                    if i > 0 {
+                        l.spans.insert(0, Span::raw("  "));
+                    }
+                    l
+                },
+            ));
+        }
+    };
+    let strong = Style::new().fg(t.fg).bold();
+    match app.kink_groups() {
+        Some(g) => {
+            let shared = Style::new().fg(t.highlight).bold();
+            group(format!("shared · {}", g.shared.len()), &g.shared, shared);
+            group(format!("theirs only · {}", g.theirs.len()), &g.theirs, strong);
+            group(format!("yours, not on their list · {}", g.mine.len()), &g.mine, strong);
+        }
+        None => {
+            let mine = &app.config.active().preferences.kinks;
+            group(format!("your kinks · {}", app.config.active_profile), mine, strong);
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(
+                "Once you're matched, this compares your partner's list with yours.",
+                Style::new().fg(t.muted),
+            )));
+        }
+    }
+    lines
 }
 
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
@@ -87,6 +142,14 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 Line::from(Span::styled("kept on this machine only", Style::new().fg(t.muted))),
             ];
             frame.render_widget(Paragraph::new(lines), inner);
+        }
+        Modal::Kinks { scroll } => {
+            let rect = centered(area, 80, area.height.saturating_sub(2));
+            let block = frame_block(app, "Kinks · ↑/↓ scroll");
+            let width = block.inner(rect).width as usize;
+            let lines = kink_lines(app, width);
+            frame.render_widget(Clear, rect);
+            frame.render_widget(Paragraph::new(lines).block(block).scroll((*scroll, 0)), rect);
         }
         Modal::Palette { query, selected } => {
             let matches = app.palette_matches(query);

@@ -11,6 +11,7 @@ pub enum Row {
     Transparent,
     ChatStyle,
     RpFormatting,
+    Emoji,
     Timestamps,
     Sidebar,
     SplitChats,
@@ -55,7 +56,9 @@ impl Row {
         use Row::*;
         match self {
             Theme | Transparent | ChatStyle | RpFormatting | Timestamps | Sidebar => "Appearance",
-            SplitChats | SaveLogs | ConfirmActions | AutoRequeue | RequeueDelay | Editor | ParagraphBreak => "Chats",
+            SplitChats | SaveLogs | ConfirmActions | AutoRequeue | RequeueDelay | Editor | ParagraphBreak | Emoji => {
+                "Chats"
+            }
             SkipEnabled | SkipMinShared | SkipLanguage | SkipMax => {
                 "Auto-skip (limits are set per profile in Preferences)"
             }
@@ -87,6 +90,7 @@ impl Row {
             RequeueDelay => "Seconds before searching again".into(),
             Editor => "Editor command".into(),
             ParagraphBreak => "Paragraph separator for editor posts".into(),
+            Emoji => "Emoji shortcodes".into(),
             SkipEnabled => "Skip partners that break my rules".into(),
             SkipMinShared => "Minimum shared kinks".into(),
             SkipLanguage => "Skip a different language".into(),
@@ -137,6 +141,7 @@ impl Row {
             Transparent => flag(s.transparent_background),
             ChatStyle => format!("‹ {} ›", s.chat_style.name()),
             RpFormatting => flag(s.rp_formatting),
+            Emoji => flag(s.emoji_shortcodes),
             Timestamps => flag(s.timestamps),
             Sidebar => flag(s.show_sidebar),
             SplitChats => flag(s.split_chats),
@@ -192,6 +197,7 @@ impl Row {
             SaveLogs => {
                 "Write every chat to ~/.local/share/yap/logs (private files). Includes this session's chats so far."
             }
+            Emoji => "Type :smile: and it's sent as the emoji. While typing :smi… Tab completes the first suggestion.",
             AutoRequeue => "After a partner leaves or drops, search again automatically. Esc in the chat cancels.",
             Editor => "Used by ^X or /edit. Anything your shell can run, e.g. `nvim` or `code --wait`.",
             ParagraphBreak => "The site only takes one line per message, so blank lines in the editor become this.",
@@ -233,6 +239,7 @@ pub fn rows(s: &Settings) -> Vec<Row> {
         RequeueDelay,
         Editor,
         ParagraphBreak,
+        Emoji,
         SkipEnabled,
         SkipMinShared,
         SkipLanguage,
@@ -276,6 +283,7 @@ impl App {
             ChatStyle | MaxRows | MaxCols | TrafficCapacity => return self.adjust_setting(row, 1),
             Timestamps => s.timestamps ^= true,
             RpFormatting => s.rp_formatting ^= true,
+            Emoji => s.emoji_shortcodes ^= true,
             Sidebar => s.show_sidebar ^= true,
             SplitChats => s.split_chats ^= true,
             SaveLogs => {

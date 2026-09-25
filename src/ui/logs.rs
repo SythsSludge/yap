@@ -121,8 +121,14 @@ fn draw_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let (you, partner) = conv.names();
-    let view =
-        View { you: you.to_lowercase(), partner: partner.to_lowercase(), typing: false, focus: None, search: None };
+    let view = View {
+        you: you.to_lowercase(),
+        partner: partner.to_lowercase(),
+        typing: false,
+        focus: None,
+        search: None,
+        unsure: &[],
+    };
     let laid = layout_entries(app, entries, inner.width as usize, &view);
     let total = laid.total();
     let max_top = total.saturating_sub(inner.height as usize);

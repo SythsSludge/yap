@@ -30,6 +30,7 @@ pub struct Session {
     pub skips: u32,
     /// What you've called the current partner (`/nick`).
     pub partner_nick: Option<String>,
+    pub clock: Clock,
 }
 
 impl Session {
@@ -50,6 +51,7 @@ impl Session {
             requeue_at: None,
             skips: 0,
             partner_nick: None,
+            clock: Clock::default(),
         }
     }
 }
@@ -96,6 +98,7 @@ impl App {
             requeue_at,
             skips,
             partner_nick,
+            clock,
         } = other;
         std::mem::swap(&mut self.session_id, id);
         std::mem::swap(&mut self.status, status);
@@ -112,6 +115,7 @@ impl App {
         std::mem::swap(&mut self.requeue_at, requeue_at);
         std::mem::swap(&mut self.skips, skips);
         std::mem::swap(&mut self.partner_nick, partner_nick);
+        std::mem::swap(&mut self.clock, clock);
     }
 
     /// Run `f` with session `id` swapped in as the current one. Returns `None` if there's

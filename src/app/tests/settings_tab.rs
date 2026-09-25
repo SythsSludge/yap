@@ -119,3 +119,39 @@ fn hints_follow_bindings() {
     assert!(hints.contains(&("alt+f".to_owned(), "find")));
     assert!(!hints.iter().any(|(_, what)| *what == "block"));
 }
+
+#[test]
+fn outside_edits_to_config_and_themes_are_picked_up() {
+    let mut h = harness();
+    let paths = h.paths.clone();
+    let tick = |h: &mut Harness| {
+        h.now += Duration::from_secs(1);
+        h.on_tick();
+    };
+    // yap's own saves aren't outside edits.
+    h.config.settings.timestamps = false;
+    h.config_changed();
+    h.flush();
+    tick(&mut h);
+    assert!(h.toasts.is_empty());
+
+    let mut edited = h.config.clone();
+    edited.settings.theme = "nord".into();
+    edited.save(&paths.config_file).unwrap();
+    tick(&mut h);
+    assert_eq!(h.theme.name, "nord");
+    assert_eq!(h.last_toast(), Some("Reloaded config.toml."));
+
+    // A broken file is reported and the current settings are kept.
+    std::fs::write(&paths.config_file, "theme = [").unwrap();
+    tick(&mut h);
+    assert!(h.last_toast().unwrap().ends_with("Keeping the current settings."));
+    assert_eq!(h.config.settings.theme, "nord");
+
+    // New theme files show up without a restart.
+    std::fs::create_dir_all(&paths.themes_dir).unwrap();
+    std::fs::write(paths.themes_dir.join("mine.toml"), "extends = \"nord\"\n[colors]\naccent = \"#ff79c6\"\n").unwrap();
+    tick(&mut h);
+    assert!(h.themes.iter().any(|t| t.name == "mine"));
+    assert_eq!(h.last_toast(), Some("Reloaded themes."));
+}

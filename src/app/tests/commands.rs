@@ -55,3 +55,25 @@ fn trust_and_untrust_domains() {
     h.run_command(Command::Trust("nope".into()));
     assert_eq!(h.last_toast(), Some("`nope` isn't a domain."));
 }
+
+#[test]
+fn tab_completes_slash_commands() {
+    let mut h = harness().online().with_prefs();
+    h.drawer_panel = true;
+    h.type_str("/lo");
+    h.press(KeyCode::Tab);
+    assert_eq!(h.input.text(), "/log ");
+    assert_eq!(h.chat_focus, ChatFocus::Input, "Tab completed rather than moving to the drawer");
+    h.input.clear();
+    h.type_str("/sta");
+    h.press(KeyCode::Tab);
+    assert_eq!(h.input.text(), "/stats");
+    h.press(KeyCode::Enter);
+    assert!(matches!(h.modal, Some(Modal::Stats)));
+
+    // With nothing to complete, Tab still moves to the drawer panel.
+    h.modal = None;
+    h.input.clear();
+    h.press(KeyCode::Tab);
+    assert_eq!(h.chat_focus, ChatFocus::Drawer);
+}

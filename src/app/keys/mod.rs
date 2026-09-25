@@ -216,6 +216,7 @@ impl App {
             Action::Editor => self.compose_in_editor(),
             Action::SelectMessage => self.select_message(None),
             Action::SearchChat => self.start_search(None),
+            Action::Kinks => self.open_kinks(),
             Action::Leave => self.request_leave(),
             Action::Block => self.request_block(),
             Action::Links => self.open_links(),
@@ -275,6 +276,10 @@ impl App {
                 if !self.cancel_requeue() {
                     self.chat.follow();
                 }
+                return;
+            }
+            KeyCode::Tab if self.complete_command() || self.complete_emoji() => {
+                self.input_changed();
                 return;
             }
             KeyCode::Tab if self.drawer_panel => {
