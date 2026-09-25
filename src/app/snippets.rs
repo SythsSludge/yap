@@ -8,12 +8,14 @@ impl App {
     pub fn snippet_vars(&self) -> Vec<(&'static str, String)> {
         let p = &self.config.active().preferences;
         let mut vars = vec![
+            ("me", self.my_label()),
             ("profile", self.config.active_profile.clone()),
             ("gender", p.summary(Field::Gender)),
             ("species", p.summary(Field::Species)),
             ("role", p.summary(Field::Role)),
         ];
         if let PartnerState::Connected(info) = &self.partner {
+            vars.push(("partner", self.partner_label()));
             vars.extend([
                 ("partner_gender", info.gender.clone()),
                 ("partner_species", info.species.clone()),

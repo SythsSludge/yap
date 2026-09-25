@@ -165,6 +165,7 @@ impl App {
         self.effect(Effect::Send(ClientMessage::Typing(false)));
         self.typing_sent = false;
         self.effect(Effect::Send(ClientMessage::SendMessage(text.clone())));
+        self.count(|s| s.sent += 1);
         self.input.submit();
         self.request_images(&text);
         self.push(EntryKind::You(text));
@@ -256,6 +257,11 @@ impl App {
                 self.add_snippet(&name, &text);
             }
             Command::Edit => self.compose_in_editor(),
+            Command::Name(name) => self.set_character(name.as_deref().unwrap_or("")),
+            Command::Nick(nick) => self.set_nick(nick.as_deref().unwrap_or("")),
+            Command::Search(query) => self.start_search(query.as_deref()),
+            Command::Select => self.select_message(None),
+            Command::Stats => self.modal = Some(Modal::Stats),
             Command::DrawerExport(path) => self.export_drawer(&path),
             Command::DrawerImport(path) => self.import_drawer(&path),
             Command::NewChat => self.new_session(),

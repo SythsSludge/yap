@@ -34,6 +34,10 @@ fn draw_profiles(frame: &mut Frame, app: &App, area: Rect) {
             let ready = p.preferences.validate().is_ok();
             ListItem::new(Line::from(vec![
                 Span::styled(truncate(&p.name, width), Style::new().fg(if active { t.fg } else { t.muted })),
+                Span::styled(
+                    if p.character.is_empty() { String::new() } else { format!(" · {}", truncate(&p.character, 12)) },
+                    t.muted(),
+                ),
                 Span::styled(if active { " ●" } else { "" }, Style::new().fg(t.success)),
                 Span::styled(if ready { "" } else { " !" }, Style::new().fg(t.warning)),
             ]))

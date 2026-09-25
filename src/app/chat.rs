@@ -36,12 +36,24 @@ impl Entry {
         }
     }
 
+    /// Text that chat search looks through.
+    pub fn searchable_text(&self) -> String {
+        match &self.kind {
+            EntryKind::You(t) | EntryKind::Partner(t) | EntryKind::System(t) | EntryKind::Warning(t) => t.clone(),
+            EntryKind::PartnerInfo { info, .. } => partner_summary(info),
+        }
+    }
+
+    pub fn is_message(&self) -> bool {
+        matches!(self.kind, EntryKind::You(_) | EntryKind::Partner(_))
+    }
+
     /// `[2026-09-25 14:03:12] You: hi` for plain-text transcripts.
-    pub fn transcript_line(&self) -> String {
+    pub fn transcript_line(&self, you: &str, partner: &str) -> String {
         let time = self.at.format("%Y-%m-%d %H:%M:%S");
         match &self.kind {
-            EntryKind::You(t) => format!("[{time}] You: {t}"),
-            EntryKind::Partner(t) => format!("[{time}] Partner: {t}"),
+            EntryKind::You(t) => format!("[{time}] {you}: {t}"),
+            EntryKind::Partner(t) => format!("[{time}] {partner}: {t}"),
             EntryKind::System(t) | EntryKind::Warning(t) => format!("[{time}] * {t}"),
             EntryKind::PartnerInfo { info, .. } => format!("[{time}] * {}", partner_summary(info)),
         }
@@ -55,6 +67,34 @@ pub struct ChatLink {
     pub from_partner: bool,
 }
 
+/// Searching the current chat.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Search {
+    pub query: String,
+    /// Entries containing the query, oldest first.
+    pub hits: Vec<usize>,
+    /// Index into `hits`.
+    pub current: usize,
+    /// Keys edit the query (rather than stepping through hits).
+    pub editing: bool,
+}
+
+impl Search {
+    pub fn current_entry(&self) -> Option<usize> {
+        self.hits.get(self.current).copied()
+    }
+}
+
+/// What keys in the chat tab are doing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ChatMode {
+    #[default]
+    Normal,
+    /// A message is selected (entry index) for quoting, copying or saving.
+    Select(usize),
+    Search(Search),
+}
+
 #[derive(Debug, Default)]
 pub struct Chat {
     pub entries: Vec<Entry>,
@@ -66,6 +106,7 @@ pub struct Chat {
     /// Filled in by the renderer so scrolling knows the geometry.
     pub last_total: usize,
     pub last_height: usize,
+    pub mode: ChatMode,
 }
 
 impl Chat {
@@ -78,7 +119,31 @@ impl Chat {
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.mode = ChatMode::Normal;
         self.follow();
+    }
+
+    /// Entries that are messages (as opposed to status lines).
+    pub fn message_indices(&self) -> Vec<usize> {
+        (0..self.entries.len()).filter(|&i| self.entries[i].is_message()).collect()
+    }
+
+    /// Entries containing `query`, ignoring case.
+    pub fn search(&self, query: &str) -> Vec<usize> {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        (0..self.entries.len()).filter(|&i| self.entries[i].searchable_text().to_lowercase().contains(&q)).collect()
+    }
+
+    /// The entry the view should keep on screen, if any.
+    pub fn focus_entry(&self) -> Option<usize> {
+        match &self.mode {
+            ChatMode::Normal => None,
+            ChatMode::Select(i) => Some(*i),
+            ChatMode::Search(s) => s.current_entry(),
+        }
     }
 
     fn max_top(&self) -> usize {
@@ -139,10 +204,10 @@ impl Chat {
     }
 
     /// Plain-text transcript for `/log`.
-    pub fn transcript(&self) -> String {
+    pub fn transcript(&self, you: &str, partner: &str) -> String {
         let mut out = String::new();
         for e in &self.entries {
-            out.push_str(&e.transcript_line());
+            out.push_str(&e.transcript_line(you, partner));
             out.push('\n');
         }
         out
@@ -215,12 +280,28 @@ mod tests {
     }
 
     #[test]
+    fn search_finds_messages_and_status_lines() {
+        let mut chat = Chat::default();
+        chat.push(at(), EntryKind::System("Partner connected".into()));
+        chat.push(at(), EntryKind::Partner("Meet me at the LIGHTHOUSE".into()));
+        chat.push(at(), EntryKind::You("the lighthouse? sure".into()));
+        assert_eq!(chat.search("lighthouse"), vec![1, 2]);
+        assert_eq!(chat.search("partner"), vec![0]);
+        assert!(chat.search("   ").is_empty());
+        assert_eq!(chat.message_indices(), vec![1, 2]);
+        chat.mode = ChatMode::Select(2);
+        assert_eq!(chat.focus_entry(), Some(2));
+        chat.clear();
+        assert_eq!(chat.mode, ChatMode::Normal);
+    }
+
+    #[test]
     fn transcript_formats_every_kind() {
         let mut chat = Chat::default();
         chat.push(at(), EntryKind::System("connected".into()));
         chat.push(at(), EntryKind::You("hi".into()));
         chat.push(at(), EntryKind::Partner("hey".into()));
-        let t = chat.transcript();
+        let t = chat.transcript("You", "Partner");
         assert!(t.contains("] * connected\n"));
         assert!(t.contains("] You: hi\n"));
         assert!(t.contains("] Partner: hey\n"));

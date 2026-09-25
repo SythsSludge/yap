@@ -19,6 +19,9 @@ struct Header {
     yap_log: u32,
     started: DateTime<Local>,
     partner: Option<PartnerInfo>,
+    /// Your character name at the time, if you had one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    me: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,6 +39,10 @@ pub struct Conversation {
     written: usize,
     /// A name you gave this chat.
     pub name: Option<String>,
+    /// Your character name in this chat.
+    pub me: Option<String>,
+    /// What you called your partner (`/nick`).
+    pub partner_nick: Option<String>,
     /// Pinned chats sort to the top.
     pub pinned: bool,
 }
@@ -53,12 +60,14 @@ struct ChatMeta {
     name: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pinned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nick: Option<String>,
 }
 
 const META_FILE: &str = "meta.toml";
 
 impl Conversation {
-    fn new(started: DateTime<Local>, partner: Option<PartnerInfo>) -> Self {
+    fn new(started: DateTime<Local>, partner: Option<PartnerInfo>, me: Option<String>) -> Self {
         Conversation {
             started,
             ended: None,
@@ -69,6 +78,8 @@ impl Conversation {
             written: 0,
             name: None,
             pinned: false,
+            me,
+            partner_nick: None,
         }
     }
 
@@ -139,10 +150,16 @@ impl Conversation {
     }
 
     /// Plain-text transcript.
+    /// Display names: your character (or "You") and the partner's nickname (or "Partner").
+    pub fn names(&self) -> (String, String) {
+        (self.me.clone().unwrap_or_else(|| "You".into()), self.partner_nick.clone().unwrap_or_else(|| "Partner".into()))
+    }
+
     pub fn transcript(&self) -> Option<String> {
+        let (you, partner) = self.names();
         let mut out = format!("Chat with {} · started {}\n\n", self.title(), self.started.format("%Y-%m-%d %H:%M:%S"));
         for e in self.entries.as_ref()? {
-            out.push_str(&e.transcript_line());
+            out.push_str(&e.transcript_line(&you, &partner));
             out.push('\n');
         }
         Some(out)
@@ -190,6 +207,7 @@ impl Logs {
                     if let Some(m) = key.and_then(|k| meta.chats.get(k)) {
                         conv.name = m.name.clone();
                         conv.pinned = m.pinned;
+                        conv.partner_nick = m.nick.clone();
                     }
                 }
             }
@@ -197,6 +215,14 @@ impl Logs {
             Err(_) => {}
         }
         (logs, warnings)
+    }
+
+    /// Remember what you called the partner in a session's live chat.
+    pub fn set_nick(&mut self, session: u64, nick: Option<String>) {
+        if let Some(&i) = self.live.get(&session) {
+            self.items[i].partner_nick = nick;
+            self.meta_dirty = true;
+        }
     }
 
     /// Name a chat (an empty name clears it).
@@ -237,9 +263,9 @@ impl Logs {
 
     /// Begin a new conversation with a freshly matched partner, ending the session's
     /// previous one.
-    pub fn start(&mut self, session: u64, at: DateTime<Local>, partner: PartnerInfo) {
+    pub fn start(&mut self, session: u64, at: DateTime<Local>, partner: PartnerInfo, me: Option<String>) {
         self.end(session, at);
-        self.items.push(Conversation::new(at, Some(partner)));
+        self.items.push(Conversation::new(at, Some(partner), me));
         self.live.insert(session, self.items.len() - 1);
     }
 
@@ -310,7 +336,12 @@ impl Logs {
                 None => {
                     create_private_dir(dir)?;
                     let path = unique_path(dir, conv.started);
-                    let header = Header { yap_log: 1, started: conv.started, partner: conv.partner.clone() };
+                    let header = Header {
+                        yap_log: 1,
+                        started: conv.started,
+                        partner: conv.partner.clone(),
+                        me: conv.me.clone(),
+                    };
                     let mut file = open_private(&path)?;
                     writeln!(file, "{}", serde_json::to_string(&header)?)?;
                     conv.path = Some(path.clone());
@@ -333,10 +364,10 @@ impl Logs {
         let chats = self
             .items
             .iter()
-            .filter(|c| c.name.is_some() || c.pinned)
+            .filter(|c| c.name.is_some() || c.pinned || c.partner_nick.is_some())
             .filter_map(|c| {
                 let file = c.path.as_deref()?.file_name()?.to_str()?.to_owned();
-                Some((file, ChatMeta { name: c.name.clone(), pinned: c.pinned }))
+                Some((file, ChatMeta { name: c.name.clone(), pinned: c.pinned, nick: c.partner_nick.clone() }))
             })
             .collect();
         create_private_dir(dir)?;
@@ -356,7 +387,7 @@ fn read_file(path: &Path) -> Result<Conversation> {
     let file = std::fs::File::open(path)?;
     let mut lines = std::io::BufReader::new(file).lines();
     let header: Header = serde_json::from_str(&lines.next().context("empty file")??).context("bad header")?;
-    let mut conv = Conversation::new(header.started, header.partner);
+    let mut conv = Conversation::new(header.started, header.partner, header.me);
     for line in lines {
         let line = line?;
         if line.trim().is_empty() {
@@ -422,10 +453,10 @@ mod tests {
     fn conversations_split_per_partner() {
         let mut logs = Logs::default();
         assert!(!logs.record(0, entry(0, EntryKind::System("searching".into()))), "nothing live yet");
-        logs.start(0, at(1), fox());
+        logs.start(0, at(1), fox(), None);
         logs.record(0, entry(2, EntryKind::Partner("hi".into())));
         logs.record(0, entry(3, EntryKind::You("hey".into())));
-        logs.start(0, at(10), PartnerInfo { species: "Wolf".into(), ..fox() });
+        logs.start(0, at(10), PartnerInfo { species: "Wolf".into(), ..fox() }, None);
         logs.record(0, entry(11, EntryKind::Partner("yo".into())));
         logs.end(0, at(12));
         logs.record_after(entry(13, EntryKind::System("blocked".into())));
@@ -443,7 +474,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let logs_dir = dir.path().join("logs");
         let mut logs = Logs::default();
-        logs.start(0, at(0), fox());
+        logs.start(0, at(0), fox(), None);
         logs.record(0, entry(1, EntryKind::Partner("one".into())));
         logs.save(&logs_dir).unwrap();
         logs.record(0, entry(2, EntryKind::You("two".into())));
@@ -471,7 +502,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let logs_dir = dir.path().join("logs");
         let mut logs = Logs::default();
-        logs.start(0, at(0), fox());
+        logs.start(0, at(0), fox(), None);
         logs.save(&logs_dir).unwrap();
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&logs_dir), 0o700);
@@ -482,7 +513,7 @@ mod tests {
     fn tolerates_torn_lines_and_skips_garbage_files() {
         let dir = tempfile::tempdir().unwrap();
         let mut logs = Logs::default();
-        logs.start(0, at(0), fox());
+        logs.start(0, at(0), fox(), None);
         logs.record(0, entry(1, EntryKind::Partner("kept".into())));
         logs.save(dir.path()).unwrap();
         let path = logs.items[0].path.clone().unwrap();
@@ -499,8 +530,8 @@ mod tests {
     fn delete_removes_file_but_not_live_chat() {
         let dir = tempfile::tempdir().unwrap();
         let mut logs = Logs::default();
-        logs.start(0, at(0), fox());
-        logs.start(0, at(5), fox());
+        logs.start(0, at(0), fox(), None);
+        logs.start(0, at(5), fox(), None);
         logs.save(dir.path()).unwrap();
         assert!(logs.delete(1).is_err());
         let path = logs.items[0].path.clone().unwrap();
@@ -510,10 +541,24 @@ mod tests {
     }
 
     #[test]
+    fn names_are_kept_with_the_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut logs = Logs::default();
+        logs.start(0, at(0), fox(), Some("Ember".into()));
+        logs.record(0, entry(1, EntryKind::Partner("hi".into())));
+        logs.set_nick(0, Some("Rook".into()));
+        logs.save(dir.path()).unwrap();
+        let (mut loaded, _) = Logs::load_dir(dir.path());
+        assert_eq!(loaded.items[0].names(), ("Ember".into(), "Rook".into()));
+        loaded.open(0).unwrap();
+        assert!(loaded.items[0].transcript().unwrap().contains("] Rook: hi"));
+    }
+
+    #[test]
     fn sessions_have_independent_live_chats() {
         let mut logs = Logs::default();
-        logs.start(1, at(0), fox());
-        logs.start(2, at(1), PartnerInfo { species: "Wolf".into(), ..fox() });
+        logs.start(1, at(0), fox(), None);
+        logs.start(2, at(1), PartnerInfo { species: "Wolf".into(), ..fox() }, None);
         logs.record(1, entry(2, EntryKind::Partner("to one".into())));
         logs.record(2, entry(3, EntryKind::Partner("to two".into())));
         logs.end(1, at(4));
@@ -529,8 +574,8 @@ mod tests {
     fn names_and_pins_persist_beside_the_logs() {
         let dir = tempfile::tempdir().unwrap();
         let mut logs = Logs::default();
-        logs.start(0, at(0), fox());
-        logs.start(0, at(5), fox());
+        logs.start(0, at(0), fox(), None);
+        logs.start(0, at(5), fox(), None);
         logs.end(0, at(9));
         logs.rename(0, "  the good one ");
         assert!(logs.toggle_pin(1));
@@ -547,7 +592,7 @@ mod tests {
     fn full_text_search_with_excerpts() {
         let dir = tempfile::tempdir().unwrap();
         let mut logs = Logs::default();
-        logs.start(0, at(0), fox());
+        logs.start(0, at(0), fox(), None);
         logs.record(0, entry(1, EntryKind::Partner("We met at the old lighthouse by the sea, remember?".into())));
         logs.save(dir.path()).unwrap();
         let (mut loaded, _) = Logs::load_dir(dir.path());
@@ -566,8 +611,8 @@ mod tests {
     fn same_second_chats_get_distinct_files() {
         let dir = tempfile::tempdir().unwrap();
         let mut logs = Logs::default();
-        logs.start(0, at(0), fox());
-        logs.start(0, at(0), fox());
+        logs.start(0, at(0), fox(), None);
+        logs.start(0, at(0), fox(), None);
         logs.save(dir.path()).unwrap();
         assert_ne!(logs.items[0].path, logs.items[1].path);
     }

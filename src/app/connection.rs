@@ -96,6 +96,7 @@ impl App {
                 let text = crate::text::sanitize(&text);
                 self.chat.partner_typing = false;
                 self.request_images(&text);
+                self.count(|s| s.received += 1);
                 let mentioned = !crate::text::find_keywords(&text, &self.config.settings.notify.keywords).is_empty();
                 self.push(EntryKind::Partner(text));
                 if mentioned {
@@ -190,7 +191,10 @@ impl App {
         if self.config.settings.split_chats {
             self.chat.clear();
         }
-        self.logs.start(self.session_id, Local::now(), info.clone());
+        self.partner_nick = None;
+        self.count(|s| s.partners += 1);
+        let me = Some(self.config.active().character.clone()).filter(|c| !c.is_empty());
+        self.logs.start(self.session_id, Local::now(), info.clone(), me);
         self.system("You have been connected with a yiffing partner.");
         if let Some(lang) = &info.language {
             self.system(format!("Your partner's language is {lang}"));

@@ -2,6 +2,7 @@
 //! Transcript layout is shared with the logs tab.
 
 use super::{Rows, columns, render_list, section};
+use crate::app::chat::ChatMode;
 use crate::app::chat::{Entry, EntryKind};
 use crate::app::{App, ChatFocus, Hit, ListId, PartnerState};
 use crate::catalog::{ANY, MAX_MESSAGE_LEN};
@@ -10,7 +11,7 @@ use crate::images::{ImageState, Loaded};
 use crate::keymap::Action;
 use crate::links::find_links;
 use crate::prefs::Field;
-use crate::text::{find_keywords, truncate, width, wrap};
+use crate::text::{Markup, find_keywords, roleplay_markup, truncate, width, wrap};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -23,8 +24,6 @@ use std::sync::Arc;
 const SIDEBAR_WIDTH: u16 = 28;
 const DRAWER_WIDTH: u16 = 32;
 const MAX_INPUT_ROWS: usize = 6;
-/// Width of the name column in the compact layout.
-const NAME_COL: usize = 9;
 
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     app.mark_seen();
@@ -68,8 +67,12 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
 /// A vertical slice of the transcript.
 pub(super) enum Chunk {
     Lines(Vec<Line<'static>>),
-    /// A message body; clicking it opens its links.
-    Message(Vec<Line<'static>>, Vec<String>),
+    /// A message body. Clicking opens its links, or selects it if it has none.
+    Message {
+        lines: Vec<Line<'static>>,
+        entry: usize,
+        links: Vec<String>,
+    },
     Image {
         loaded: Arc<Loaded>,
         x: u16,
@@ -80,7 +83,7 @@ pub(super) enum Chunk {
 impl Chunk {
     fn height(&self) -> usize {
         match self {
-            Chunk::Lines(l) | Chunk::Message(l, _) => l.len(),
+            Chunk::Lines(l) | Chunk::Message { lines: l, .. } => l.len(),
             Chunk::Image { loaded, .. } => loaded.rows() as usize,
         }
     }
@@ -90,20 +93,24 @@ pub(super) fn total_height(chunks: &[Chunk]) -> usize {
     chunks.iter().map(Chunk::height).sum()
 }
 
-/// Split a message into styled spans: links in `link`, keyword hits in `mark`.
-fn message_spans(text: &str, base: Style, link: Style, marks: &[(usize, usize)], mark: Style) -> Vec<Span<'static>> {
+/// Split text into styled spans: links in `link`, and each mark's style patched over
+/// whatever it covers (later marks win).
+fn message_spans(text: &str, base: Style, link: Style, marks: &[(usize, usize, Style)]) -> Vec<Span<'static>> {
     let links: Vec<(usize, usize)> = find_links(text).iter().map(|l| (l.start, l.end)).collect();
     let mut cuts: Vec<usize> = vec![0, text.len()];
-    cuts.extend(links.iter().chain(marks).flat_map(|&(s, e)| [s, e]));
+    cuts.extend(links.iter().flat_map(|&(s, e)| [s, e]));
+    cuts.extend(marks.iter().flat_map(|&(s, e, _)| [s, e]));
     cuts.sort_unstable();
     cuts.dedup();
-    let inside = |ranges: &[(usize, usize)], at: usize| ranges.iter().any(|&(s, e)| s <= at && at < e);
     cuts.windows(2)
-        .filter(|w| w[0] < w[1])
+        .filter(|w| w[0] < w[1] && text.is_char_boundary(w[0]) && text.is_char_boundary(w[1]))
         .map(|w| {
-            let mut style = if inside(&links, w[0]) { link } else { base };
-            if inside(marks, w[0]) {
-                style = style.patch(mark);
+            let at = w[0];
+            let mut style = if links.iter().any(|&(s, e)| s <= at && at < e) { link } else { base };
+            for &(s, e, mark) in marks {
+                if s <= at && at < e {
+                    style = style.patch(mark);
+                }
             }
             Span::styled(text[w[0]..w[1]].to_owned(), style)
         })
@@ -169,50 +176,127 @@ enum Who {
 }
 
 /// Lay out a run of chat entries for a `width`-cell column.
-pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, typing: bool) -> Vec<Chunk> {
+/// What to layer over the plain transcript.
+pub(super) struct View<'a> {
+    pub you: String,
+    pub partner: String,
+    pub typing: bool,
+    /// The entry to highlight: the selected message or the current search hit.
+    pub focus: Option<usize>,
+    /// Text to highlight wherever it appears.
+    pub search: Option<&'a str>,
+}
+
+/// A laid-out transcript: the chunks, plus which chunks each entry produced.
+pub(super) struct Laid {
+    pub chunks: Vec<Chunk>,
+    entry_chunks: Vec<(usize, usize, usize)>,
+}
+
+impl Laid {
+    pub fn total(&self) -> usize {
+        total_height(&self.chunks)
+    }
+
+    /// The transcript lines `[start, end)` an entry occupies.
+    pub fn lines_of(&self, entry: usize) -> Option<(usize, usize)> {
+        let &(_, first, last) = self.entry_chunks.iter().find(|(e, _, _)| *e == entry)?;
+        let start = total_height(&self.chunks[..first]);
+        Some((start, start + total_height(&self.chunks[first..last])))
+    }
+}
+
+/// Highlights for a piece of text: roleplay markup, keywords (partner messages only)
+/// and search matches.
+fn marks_for(app: &App, text: &str, partner: bool, view: &View, current: bool) -> Vec<(usize, usize, Style)> {
+    let t = &app.theme;
+    let s = &app.config.settings;
+    let mut marks = Vec::new();
+    if s.rp_formatting {
+        let links: Vec<(usize, usize)> = find_links(text).iter().map(|l| (l.start, l.end)).collect();
+        for (start, end, kind) in roleplay_markup(text, &links) {
+            let style = match kind {
+                Markup::Action => Style::new().add_modifier(Modifier::ITALIC),
+                Markup::OutOfCharacter => Style::new().add_modifier(Modifier::DIM),
+            };
+            marks.push((start, end, style));
+        }
+    }
+    if partner {
+        let style = Style::new().fg(t.highlight).add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+        marks.extend(find_keywords(text, &s.notify.keywords).into_iter().map(|(a, b)| (a, b, style)));
+    }
+    if let Some(query) = view.search.map(str::to_lowercase).filter(|q| !q.is_empty()) {
+        let lower = text.to_lowercase();
+        // Byte offsets only line up when lowercasing kept the length.
+        if lower.len() == text.len() {
+            let style = if current {
+                Style::new().fg(t.selection_fg).bg(t.accent).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().add_modifier(Modifier::REVERSED)
+            };
+            let mut from = 0;
+            while let Some(pos) = lower[from..].find(&query) {
+                marks.push((from + pos, from + pos + query.len(), style));
+                from += pos + query.len();
+            }
+        }
+    }
+    marks
+}
+
+/// Lay out a run of chat entries for a `width`-cell column.
+pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, view: &View) -> Laid {
     let t = &app.theme;
     let s = &app.config.settings;
     let style = s.chat_style;
     let mut out = Vec::new();
+    let mut entry_chunks = Vec::new();
     let mut last_who: Option<Who> = None;
+    let name_col = crate::text::width(&view.you).max(crate::text::width(&view.partner)).clamp(7, 16) + 2;
 
-    for entry in entries {
+    for (index, entry) in entries.iter().enumerate() {
+        let first_chunk = out.len();
+        let current = view.focus == Some(index);
         let time = s.timestamps.then(|| entry.at.format("%H:%M").to_string());
         let (who, text) = match &entry.kind {
             EntryKind::You(text) => (Who::You, text),
             EntryKind::Partner(text) => (Who::Partner, text),
+            EntryKind::PartnerInfo { info, common } => {
+                let head = format!("{} · {} · {}", info.role, info.gender, info.species);
+                let base = t.muted();
+                let mut lines = Vec::new();
+                let into: Vec<Span> = std::iter::once(Span::styled("into ", base))
+                    .chain(kink_spans(&info.kink_list(), common, t, base))
+                    .collect();
+                if style == ChatStyle::Sms {
+                    lines.extend(centre(
+                        wrap(&[Span::styled(head, Style::new().fg(t.partner))], width.saturating_sub(8), 0),
+                        width,
+                    ));
+                    lines.extend(centre(wrap(&into, width.saturating_sub(8), 0), width));
+                } else {
+                    let bullet = vec![Span::styled("• ", Style::new().fg(t.partner))];
+                    lines.extend(hanging(bullet, 2, &[Span::styled(head, Style::new().fg(t.partner))], width));
+                    lines.extend(wrap(&into, width, 2));
+                }
+                if style != ChatStyle::Compact {
+                    out.push(Chunk::Lines(vec![Line::default()]));
+                }
+                out.push(Chunk::Lines(lines));
+                entry_chunks.push((index, first_chunk, out.len()));
+                last_who = None;
+                continue;
+            }
             other => {
                 // Status lines: a dim bullet (centred in the messages layout).
-                let spans: Vec<Span> = match other {
-                    EntryKind::System(text) => vec![Span::styled(text.clone(), t.muted())],
-                    EntryKind::Warning(text) => vec![Span::styled(text.clone(), Style::new().fg(t.warning))],
-                    EntryKind::PartnerInfo { info, common } => {
-                        let head = format!("{} · {} · {}", info.role, info.gender, info.species);
-                        let base = t.muted();
-                        let mut lines = Vec::new();
-                        let into: Vec<Span> = std::iter::once(Span::styled("into ", base))
-                            .chain(kink_spans(&info.kink_list(), common, t, base))
-                            .collect();
-                        if style == ChatStyle::Sms {
-                            lines.extend(centre(
-                                wrap(&[Span::styled(head, Style::new().fg(t.partner))], width.saturating_sub(8), 0),
-                                width,
-                            ));
-                            lines.extend(centre(wrap(&into, width.saturating_sub(8), 0), width));
-                        } else {
-                            let bullet = vec![Span::styled("• ", Style::new().fg(t.partner))];
-                            lines.extend(hanging(bullet, 2, &[Span::styled(head, Style::new().fg(t.partner))], width));
-                            lines.extend(wrap(&into, width, 2));
-                        }
-                        if style != ChatStyle::Compact {
-                            out.push(Chunk::Lines(vec![Line::default()]));
-                        }
-                        out.push(Chunk::Lines(lines));
-                        last_who = None;
-                        continue;
-                    }
-                    EntryKind::You(_) | EntryKind::Partner(_) => unreachable!(),
+                let (text, base) = match other {
+                    EntryKind::Warning(text) => (text, Style::new().fg(t.warning)),
+                    EntryKind::System(text) => (text, t.muted()),
+                    _ => unreachable!("messages and partner info are handled above"),
                 };
+                let marks = marks_for(app, text, false, view, current);
+                let spans = message_spans(text, base, t.link(), &marks);
                 let lines = if style == ChatStyle::Sms {
                     centre(wrap(&spans, width.saturating_sub(8), 0), width)
                 } else {
@@ -227,48 +311,48 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, typing:
                     out.push(Chunk::Lines(vec![Line::default()]));
                 }
                 out.push(Chunk::Lines(lines));
+                entry_chunks.push((index, first_chunk, out.len()));
                 last_who = None;
                 continue;
             }
         };
 
         let (name, name_color) = match who {
-            Who::You => ("you", t.you),
-            Who::Partner => ("partner", t.partner),
+            Who::You => (view.you.as_str(), t.you),
+            Who::Partner => (view.partner.as_str(), t.partner),
         };
         let name_style = Style::new().fg(name_color).add_modifier(Modifier::BOLD);
         let new_group = last_who != Some(who);
         last_who = Some(who);
         let links: Vec<String> = find_links(text).into_iter().map(|l| l.url).collect();
-        // Keywords only light up in what your partner says.
-        let marks = if who == Who::Partner { find_keywords(text, &s.notify.keywords) } else { Vec::new() };
-        let mark = Style::new().fg(t.highlight).add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+        let marks = marks_for(app, text, who == Who::Partner, view, current);
+        let message = |lines| Chunk::Message { lines, entry: index, links: links.clone() };
 
         let image_x: u16 = match style {
             ChatStyle::Cozy => {
                 if new_group {
                     out.push(Chunk::Lines(vec![Line::default()]));
-                    let mut header = vec![Span::styled(name, name_style)];
+                    let mut header = vec![Span::styled(name.to_owned(), name_style)];
                     if let Some(time) = &time {
                         header.push(Span::styled(format!("  {time}"), t.muted()));
                     }
                     out.push(Chunk::Lines(vec![Line::from(header)]));
                 }
-                let spans = message_spans(text, Style::new().fg(t.fg), t.link(), &marks, mark);
-                out.push(Chunk::Message(wrap(&spans, width, 2), links));
+                let spans = message_spans(text, Style::new().fg(t.fg), t.link(), &marks);
+                out.push(message(wrap(&spans, width, 2)));
                 2
             }
             ChatStyle::Compact => {
                 let mut prefix = Vec::new();
-                let mut indent = NAME_COL;
+                let mut indent = name_col;
                 if let Some(time) = &time {
                     prefix.push(Span::styled(format!("{time} "), t.muted()));
                     indent += 6;
                 }
-                let shown = if new_group { name } else { "" };
-                prefix.push(Span::styled(format!("{shown:<w$}", w = NAME_COL), name_style));
-                let spans = message_spans(text, Style::new().fg(t.fg), t.link(), &marks, mark);
-                out.push(Chunk::Message(hanging(prefix, indent, &spans, width), links));
+                let shown = if new_group { truncate(name, name_col - 2) } else { String::new() };
+                prefix.push(Span::styled(format!("{shown:<w$}", w = name_col), name_style));
+                let spans = message_spans(text, Style::new().fg(t.fg), t.link(), &marks);
+                out.push(message(hanging(prefix, indent, &spans, width)));
                 indent as u16
             }
             ChatStyle::Sms => {
@@ -289,7 +373,7 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, typing:
                 let max_inner = (width * 3 / 4).max(8).min(width.saturating_sub(2)).max(1);
                 let base = Style::new().fg(fg).bg(bg);
                 let link = base.add_modifier(Modifier::UNDERLINED);
-                let wrapped = wrap(&message_spans(text, base, link, &marks, mark), max_inner, 0);
+                let wrapped = wrap(&message_spans(text, base, link, &marks), max_inner, 0);
                 let inner = wrapped.iter().map(Line::width).max().unwrap_or(0);
                 let bubble_w = inner + 2;
                 let pad = if who == Who::You { width.saturating_sub(bubble_w) } else { 0 };
@@ -305,7 +389,7 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, typing:
                         Line::from(spans)
                     })
                     .collect();
-                out.push(Chunk::Message(lines, links));
+                out.push(message(lines));
                 pad as u16
             }
         };
@@ -332,12 +416,13 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, typing:
                 }
             }
         }
+        entry_chunks.push((index, first_chunk, out.len()));
     }
 
-    if typing {
+    if view.typing {
         out.push(Chunk::Lines(vec![Line::default()]));
         out.push(Chunk::Lines(vec![Line::from(Span::styled(
-            "partner is typing…",
+            format!("{} is typing…", view.partner),
             t.muted().add_modifier(Modifier::ITALIC),
         ))]));
     }
@@ -347,30 +432,50 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, typing:
         && first[0].width() == 0
     {
         out.remove(0);
+        for (_, first, last) in &mut entry_chunks {
+            *first = first.saturating_sub(1);
+            *last = last.saturating_sub(1);
+        }
     }
-    out
+    Laid { chunks: out, entry_chunks }
 }
 
 /// Render chunks into `area`, starting from transcript line `top`.
 /// Render chunks into `area` from transcript line `top`, recording click targets for
 /// messages with links and for images.
-pub(super) fn render_chunks(frame: &mut Frame, app: &App, area: Rect, chunks: &[Chunk], top: usize) {
+pub(super) fn render_chunks(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    chunks: &[Chunk],
+    top: usize,
+    fill: Option<(usize, usize)>,
+) {
     let height = area.height as usize;
+    // Shade the focused entry's rows before drawing text over them.
+    if let Some((start, end)) = fill {
+        for row in start.max(top)..end.min(top + height) {
+            let rect = Rect::new(area.x.saturating_sub(1), area.y + (row - top) as u16, area.width + 1, 1);
+            frame.render_widget(Block::new().style(Style::new().bg(app.theme.surface)), rect);
+            frame.render_widget(
+                Paragraph::new(Span::styled("▎", Style::new().fg(app.theme.accent))),
+                Rect::new(rect.x, rect.y, 1, 1),
+            );
+        }
+    }
     let mut y = 0usize;
     for chunk in chunks {
         let h = chunk.height();
         if y + h > top && y < top + height {
             match chunk {
-                Chunk::Lines(lines) | Chunk::Message(lines, _) => {
+                Chunk::Lines(lines) | Chunk::Message { lines, .. } => {
                     for (i, line) in lines.iter().enumerate() {
                         let row = y + i;
                         if row >= top && row < top + height {
                             let rect = Rect::new(area.x, area.y + (row - top) as u16, area.width, 1);
                             frame.render_widget(Paragraph::new(line.clone()), rect);
-                            if let Chunk::Message(_, links) = chunk
-                                && !links.is_empty()
-                            {
-                                app.hit(rect, Hit::Message(links.clone()));
+                            if let Chunk::Message { entry, links, .. } = chunk {
+                                app.hit(rect, Hit::Message { entry: *entry, links: links.clone() });
                             }
                         }
                     }
@@ -458,13 +563,36 @@ fn draw_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let chunks = layout_entries(app, &app.chat.entries, content.width as usize, app.chat.partner_typing);
-    let total = total_height(&chunks);
+    let search = match &app.chat.mode {
+        ChatMode::Search(s) => Some(s.query.clone()),
+        _ => None,
+    };
+    let view = View {
+        you: app.my_label(),
+        partner: app.partner_label(),
+        typing: app.chat.partner_typing,
+        focus: app.chat.focus_entry(),
+        search: search.as_deref(),
+    };
+    let laid = layout_entries(app, &app.chat.entries, content.width as usize, &view);
+    let fill = view.focus.and_then(|e| laid.lines_of(e));
+    let total = laid.total();
+    // Keep a selected message or search hit on screen.
+    if let Some((start, end)) = fill {
+        let height = content.height as usize;
+        let top = app.chat.top_line(total, height);
+        if start < top {
+            app.chat.pinned_top = Some(start);
+        } else if end > top + height {
+            let wanted = end.saturating_sub(height);
+            app.chat.pinned_top = (wanted < total.saturating_sub(height)).then_some(wanted);
+        }
+    }
     let height = content.height as usize;
     let top = app.chat.top_line(total, height);
     app.chat.last_total = total;
     app.chat.last_height = height;
-    render_chunks(frame, app, content, &chunks, top);
+    render_chunks(frame, app, content, &laid.chunks, top, fill);
 
     if !app.chat.is_following() {
         let label = match app.chat.unread {
@@ -618,6 +746,9 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
 // ----- input --------------------------------------------------------------------
 
 fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
+    if let ChatMode::Search(search) = &app.chat.mode {
+        return draw_search_bar(frame, app, area, search);
+    }
     let t = &app.theme;
     let focused = app.chat_focus == ChatFocus::Input && app.modal.is_none() && app.viewer.is_none();
     let mut block = Block::bordered().border_type(BorderType::Rounded).border_style(if focused {
@@ -658,6 +789,36 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     if focused && visible > 0 && text_area.width > 0 {
         let col = (ccol as u16).min(text_area.width - 1);
         frame.set_cursor_position(Position::new(text_area.x + col, text_area.y + (crow - first) as u16));
+    }
+}
+
+/// Replaces the message box while searching the chat.
+fn draw_search_bar(frame: &mut Frame, app: &App, area: Rect, search: &crate::app::chat::Search) {
+    let t = &app.theme;
+    let count = match search.hits.len() {
+        0 if search.query.is_empty() => String::new(),
+        0 => " no matches ".into(),
+        n => format!(" {} of {n} ", search.current + 1),
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(t.accent))
+        .title(Span::styled(" search ", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)))
+        .title_top(Line::from(Span::styled(count, t.muted())).right_aligned());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width < 3 || inner.height == 0 {
+        return;
+    }
+    let mut spans =
+        vec![Span::styled("/ ", Style::new().fg(t.accent)), Span::styled(search.query.clone(), Style::new().fg(t.fg))];
+    if !search.editing {
+        spans.push(Span::styled("   n older · N newer · enter select · / edit · esc close", t.muted()));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), inner);
+    if search.editing && app.modal.is_none() {
+        let x = (width(&search.query) as u16 + 2).min(inner.width - 1);
+        frame.set_cursor_position(Position::new(inner.x + x, inner.y));
     }
 }
 

@@ -160,6 +160,18 @@ pub fn hint_pairs(app: &App) -> Vec<(String, &'static str)> {
         Tab::Chat if app.chat_focus == ChatFocus::Drawer && app.drawer_panel => {
             fixed(&[("enter", "insert"), ("o", "open"), ("p", "preview"), ("y", "copy"), ("tab", "back")])
         }
+        Tab::Chat if matches!(app.chat.mode, crate::app::chat::ChatMode::Select(_)) => fixed(&[
+            ("↑/↓", "move"),
+            ("enter", "quote"),
+            ("y", "copy"),
+            ("o", "open link"),
+            ("s", "save link"),
+            ("n", "save as snippet"),
+            ("esc", "done"),
+        ]),
+        Tab::Chat if matches!(app.chat.mode, crate::app::chat::ChatMode::Search(_)) => {
+            fixed(&[("type", "search"), ("enter", "done typing"), ("n/N", "older/newer"), ("esc", "close")])
+        }
         Tab::Chat => bound(&[
             (Action::Find, "find"),
             (Action::Next, "next"),
@@ -175,6 +187,7 @@ pub fn hint_pairs(app: &App) -> Vec<(String, &'static str)> {
             PrefsPane::Profiles => fixed(&[
                 ("enter", "use"),
                 ("n", "new"),
+                ("m", "my name"),
                 ("c", "copy"),
                 ("r", "rename"),
                 ("d", "delete"),

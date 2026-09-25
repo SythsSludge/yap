@@ -10,6 +10,7 @@ pub enum Row {
     Theme,
     Transparent,
     ChatStyle,
+    RpFormatting,
     Timestamps,
     Sidebar,
     SplitChats,
@@ -53,7 +54,7 @@ impl Row {
     pub fn section(self) -> &'static str {
         use Row::*;
         match self {
-            Theme | Transparent | ChatStyle | Timestamps | Sidebar => "Appearance",
+            Theme | Transparent | ChatStyle | RpFormatting | Timestamps | Sidebar => "Appearance",
             SplitChats | SaveLogs | ConfirmActions | AutoRequeue | RequeueDelay | Editor | ParagraphBreak => "Chats",
             SkipEnabled | SkipMinShared | SkipLanguage | SkipMax => {
                 "Auto-skip (limits are set per profile in Preferences)"
@@ -76,6 +77,7 @@ impl Row {
             Theme => "Theme".into(),
             Transparent => "Transparent background".into(),
             ChatStyle => "Chat layout".into(),
+            RpFormatting => "Roleplay formatting".into(),
             Timestamps => "Timestamps".into(),
             Sidebar => "Partner sidebar".into(),
             SplitChats => "Fresh chat view for each partner".into(),
@@ -134,6 +136,7 @@ impl Row {
             Theme => format!("‹ {} ›", s.theme),
             Transparent => flag(s.transparent_background),
             ChatStyle => format!("‹ {} ›", s.chat_style.name()),
+            RpFormatting => flag(s.rp_formatting),
             Timestamps => flag(s.timestamps),
             Sidebar => flag(s.show_sidebar),
             SplitChats => flag(s.split_chats),
@@ -177,6 +180,9 @@ impl Row {
         use Row::*;
         match self {
             Transparent => "Leave the background unpainted so a transparent terminal shows through.",
+            RpFormatting => {
+                "Show *actions* in italics and ((out of character)) asides dimmed. Messages are sent as typed."
+            }
             ChatStyle => {
                 "cozy: name above each message · compact: one line each · messages: bubbles, yours on the right."
             }
@@ -217,6 +223,7 @@ pub fn rows(s: &Settings) -> Vec<Row> {
         Theme,
         Transparent,
         ChatStyle,
+        RpFormatting,
         Timestamps,
         Sidebar,
         SplitChats,
@@ -268,6 +275,7 @@ impl App {
             }
             ChatStyle | MaxRows | MaxCols | TrafficCapacity => return self.adjust_setting(row, 1),
             Timestamps => s.timestamps ^= true,
+            RpFormatting => s.rp_formatting ^= true,
             Sidebar => s.show_sidebar ^= true,
             SplitChats => s.split_chats ^= true,
             SaveLogs => {

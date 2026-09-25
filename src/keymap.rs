@@ -57,6 +57,7 @@ macro_rules! actions {
 
 actions! {
     Help => "help", "Show help", ["f1"];
+    Palette => "palette", "Command palette: search everything", ["ctrl+k"];
     Find => "find", "Find a partner", ["ctrl+f"];
     Next => "next", "Skip to the next partner (no confirmation)", ["ctrl+n"];
     Leave => "leave", "Leave partner / stop searching", ["ctrl+d"];
@@ -64,6 +65,8 @@ actions! {
     Links => "links", "Links in this chat", ["ctrl+o"];
     Snippets => "snippets", "Insert a snippet", ["ctrl+g"];
     Editor => "editor", "Write the message in your editor", ["ctrl+x"];
+    SelectMessage => "select-message", "Select a message to quote, copy or save", ["alt+m"];
+    SearchChat => "search-chat", "Search this chat", ["alt+/"];
     Drawer => "drawer", "Toggle the drawer panel", ["ctrl+e"];
     Profile => "profile", "Switch profile", ["ctrl+p"];
     Theme => "theme", "Switch theme", ["ctrl+t"];

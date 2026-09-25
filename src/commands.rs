@@ -51,6 +51,16 @@ pub enum Command {
     },
     /// Write the message in the external editor.
     Edit,
+    /// Set (or clear) your character name for the active profile.
+    Name(Option<String>),
+    /// Set (or clear) a nickname for the current partner.
+    Nick(Option<String>),
+    /// Search this chat (with no text, open the search bar).
+    Search(Option<String>),
+    /// Select a message to quote, copy or save.
+    Select,
+    /// Show chat statistics.
+    Stats,
     DrawerExport(String),
     DrawerImport(String),
 }
@@ -72,6 +82,8 @@ pub const HELP: &[(&str, &str)] = &[
     ("/snip [name]", "insert a snippet (no name: pick one)"),
     ("/snip-add <name> <text>", "save a snippet; {species} etc. are filled in"),
     ("/edit", "write the message in your editor"),
+    ("/name [character]", "your character's name for this profile (shown instead of \"you\")"),
+    ("/nick [name]", "a nickname for your current partner"),
     ("/profile [name]", "switch preference profile"),
     ("/theme [name]", "switch theme"),
     ("/export <path>", "export all profiles and settings (.toml/.json)"),
@@ -85,6 +97,9 @@ pub const HELP: &[(&str, &str)] = &[
     ("/log <path>", "save this chat's transcript"),
     ("/raw <json>", "send a raw websocket frame"),
     ("/links", "pick a link from the chat"),
+    ("/search [text]", "search this chat"),
+    ("/select", "select a message to quote, copy or save"),
+    ("/stats", "partners met, time chatting and more"),
     ("/logs", "browse earlier chats"),
     ("/drawer", "toggle the drawer"),
     ("/new", "open another chat alongside this one"),
@@ -123,6 +138,11 @@ pub fn parse(input: &str) -> Parsed {
             _ => Parsed::Error("/snip-add needs a name and some text".into()),
         },
         "edit" | "editor" => Parsed::Command(Command::Edit),
+        "name" | "iam" => Parsed::Command(Command::Name(opt())),
+        "nick" => Parsed::Command(Command::Nick(opt())),
+        "search" | "grep" => Parsed::Command(Command::Search(opt())),
+        "select" | "quote" => Parsed::Command(Command::Select),
+        "stats" => Parsed::Command(Command::Stats),
         "drawer-export" => need("a file path", Command::DrawerExport),
         "drawer-import" => need("a file path", Command::DrawerImport),
         "leave" | "disconnect" | "dc" => Parsed::Command(Command::Leave),

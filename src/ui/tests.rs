@@ -222,6 +222,10 @@ fn every_screen_survives_tiny_terminals() {
         |h| h.open_profile_picker(),
         |h| h.open_theme_picker(),
         |h| h.preview("https://i.imgur.com/a.png"),
+        |h| h.open_palette(),
+        |h| h.modal = Some(Modal::Stats),
+        |h| h.run_command(crate::commands::Command::Search(Some("hey".into()))),
+        |h| h.select_message(None),
         |h| {
             for i in 0..6 {
                 h.toast(crate::app::Level::Info, format!("toast number {i} with some text"));
@@ -260,6 +264,55 @@ fn keys_section_and_capture_popup() {
     let screen = render(&mut h, 100, 30);
     assert!(screen.contains("Press the new key for find a partner"), "{screen}");
     assert!(screen.contains("currently alt+f"));
+}
+
+#[test]
+fn roleplay_formatting_and_names_render() {
+    let mut h = chatting();
+    h.config.active_mut().character = "Ember".into();
+    h.run_command(crate::commands::Command::Nick(Some("Rook".into())));
+    h.server(ServerMessage::ReceiveMessage("*waves slowly* hello ((brb))".into()));
+    // A new message clears the indicator; they start typing again.
+    h.server(ServerMessage::PartnerTyping(true));
+    let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
+    terminal.draw(|f| draw(f, &mut h.app)).unwrap();
+    let screen = terminal.backend().to_string();
+    assert!(screen.contains("Ember") && screen.contains("Rook"), "{screen}");
+    assert!(screen.contains("Rook is typing…"));
+    let buf = terminal.backend().buffer();
+    let italic: String = buf
+        .content()
+        .iter()
+        .filter(|c| c.modifier.contains(ratatui::style::Modifier::ITALIC))
+        .map(|c| c.symbol())
+        .collect();
+    assert!(italic.contains("waves"), "{italic}");
+    let dim: String = buf
+        .content()
+        .iter()
+        .filter(|c| c.modifier.contains(ratatui::style::Modifier::DIM))
+        .map(|c| c.symbol())
+        .collect();
+    assert!(dim.contains("brb"), "{dim}");
+}
+
+#[test]
+fn palette_and_stats_popups_render() {
+    let mut h = app();
+    h.open_palette();
+    let screen = render(&mut h, 100, 30);
+    assert!(screen.contains("palette") && screen.contains("Find a partner"), "{screen}");
+    h.modal = Some(Modal::Stats);
+    let screen = render(&mut h, 100, 30);
+    assert!(screen.contains("partners met") && screen.contains("this session"), "{screen}");
+}
+
+#[test]
+fn search_bar_replaces_the_message_box() {
+    let mut h = chatting();
+    h.run_command(crate::commands::Command::Search(Some("ref".into())));
+    let screen = render(&mut h, 110, 26);
+    assert!(screen.contains("search") && screen.contains("1 of 1"), "{screen}");
 }
 
 #[test]

@@ -84,6 +84,57 @@ pub fn find_keywords(text: &str, keywords: &[String]) -> Vec<(usize, usize)> {
     merged
 }
 
+/// Roleplay markup inside a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Markup {
+    /// `*waves*`
+    Action,
+    /// `((brb, doorbell))`
+    OutOfCharacter,
+}
+
+/// Byte ranges of `*actions*` and `((out of character))` asides, delimiters included.
+///
+/// An action needs a `*` that opens against a non-space and closes against a
+/// non-space, so `2 * 3 * 4` isn't one. Unclosed markers are left alone, and ranges
+/// never overlap links (a URL can contain `*`).
+pub fn roleplay_markup(text: &str, links: &[(usize, usize)]) -> Vec<(usize, usize, Markup)> {
+    let in_link = |at: usize| links.iter().any(|&(s, e)| s <= at && at < e);
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if in_link(i) {
+            i += 1;
+            continue;
+        }
+        if text[i..].starts_with("((")
+            && let Some(close) = text[i + 2..].find("))")
+        {
+            let end = i + 2 + close + 2;
+            if close > 0 && !(i..end).any(in_link) {
+                out.push((i, end, Markup::OutOfCharacter));
+                i = end;
+                continue;
+            }
+        }
+        if bytes[i] == b'*' {
+            let opens = text[i + 1..].chars().next().is_some_and(|c| !c.is_whitespace() && c != '*');
+            if opens && let Some(close) = text[i + 1..].find('*') {
+                let end = i + 1 + close;
+                let closes = text[..end].chars().next_back().is_some_and(|c| !c.is_whitespace());
+                if closes && !(i..=end).any(in_link) {
+                    out.push((i, end + 1, Markup::Action));
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+        i += text[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    out
+}
+
 /// A run of non-whitespace, possibly spanning several styles (e.g. a link then a comma).
 #[derive(Debug, Default)]
 struct Word {
@@ -304,6 +355,30 @@ mod tests {
         assert_eq!(found, vec!["ASH", "red fox", "ash"]);
         assert!(find_keywords("nothing here", &kw).is_empty());
         assert!(find_keywords("🦊 ash 🦊", &kw).len() == 1);
+    }
+
+    #[test]
+    fn finds_roleplay_markup() {
+        let found = |t: &str| -> Vec<(String, Markup)> {
+            roleplay_markup(t, &[]).into_iter().map(|(s, e, m)| (t[s..e].to_owned(), m)).collect()
+        };
+        assert_eq!(
+            found("*waves* hi! *tail swish* ((brb))"),
+            vec![
+                ("*waves*".into(), Markup::Action),
+                ("*tail swish*".into(), Markup::Action),
+                ("((brb))".into(), Markup::OutOfCharacter)
+            ]
+        );
+        assert!(found("2 * 3 * 4").is_empty(), "spaced asterisks are maths, not actions");
+        assert!(found("*unclosed and (( too").is_empty());
+        assert!(found("** ((   ))").iter().all(|(_, m)| *m == Markup::OutOfCharacter));
+        assert_eq!(found("🦊 *nuzzles* 🦊"), vec![("*nuzzles*".into(), Markup::Action)]);
+        let text = "see https://x.y/*a*b and *hug*";
+        let link = (4, 20);
+        let ranges = roleplay_markup(text, &[link]);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(&text[ranges[0].0..ranges[0].1], "*hug*");
     }
 
     #[test]

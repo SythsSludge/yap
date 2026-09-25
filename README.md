@@ -31,6 +31,16 @@ indicator, block, disconnect, themes, notifications), plus the following:
   leaves and searches again.
 - **Write in your editor**: `^X` opens `$EDITOR` for long posts; blank lines become a
   paragraph separator you choose, since the site only takes one line per message.
+- **Roleplay-friendly display**: `*actions*` show in italics and `((asides))` dimmed. Set
+  your character's name per profile (`/name`) and nickname each partner (`/nick`); both
+  replace "you" and "partner" on screen and in logs. Nothing about what's sent changes.
+- **Select and search**: `alt+m` selects a message to quote into your reply, copy, open,
+  save its link, or keep as a snippet. `alt+/` searches the current chat with
+  highlighted matches.
+- **Command palette**: `ctrl+k` fuzzy-searches every action, command, setting, profile,
+  theme, snippet and open chat.
+- **Stats**: `/stats` shows partners met, auto-skips, messages and time chatting, for
+  this session and all time. Kept locally.
 - **Mouse**: click tabs, chats, list rows (double-click to activate), messages to open
   their links, and inline images to preview them. The image viewer has buttons to open,
   copy the link, save to the drawer, or save the image file to your Downloads.
@@ -61,9 +71,9 @@ yap themes | yap paths
 `--no-mouse` gives you the terminal's own text selection back. In kitty you can also hold
 Shift while dragging.
 
-At startup yap asks the terminal which image protocol it supports. A terminal that
-ignores status queries can swallow your first keypress (a ratatui-image limitation).
-Turning off *Settings → Image previews* skips the query.
+In kitty and Ghostty yap knows the image protocol already. Elsewhere it asks the
+terminal at startup, and a terminal that ignores the question can swallow your first
+keypress (a ratatui-image limitation). Turning off *Settings → Image previews* skips it.
 
 ## Keys
 
@@ -75,6 +85,9 @@ Turning off *Settings → Image previews* skips the query.
 | `Ctrl-N` | skip to the next partner, no questions asked |
 | `Ctrl-G` | insert a snippet |
 | `Ctrl-X` | write the message in your editor |
+| `Ctrl-K` | command palette |
+| `Alt-M` | select a message (quote, copy, save) |
+| `Alt-/` | search this chat |
 | `Alt-N` / `Alt-W` | open / close a chat |
 | `Ctrl-PgUp` / `Ctrl-PgDn` | previous / next chat |
 | `Ctrl-D` | leave partner; while searching, stop searching |
@@ -118,6 +131,7 @@ literal `/`.
 - `~/.config/yap/themes/*.toml`: custom themes.
 - `~/.local/share/yap/drawer.toml`: the drawer.
 - `~/Downloads` (or your XDG download folder): images saved from the viewer.
+- `~/.local/share/yap/stats.toml`: your chat statistics.
 - `~/.local/share/yap/logs/*.jsonl`: chat logs, one file per partner, only when *Save chat
   logs to disk* is on. The folder is private (0700) and the files are 0600. Deleting a chat
   in the Logs tab deletes its file.

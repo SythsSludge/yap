@@ -1,6 +1,6 @@
 //! The logs tab: earlier chats, one per partner.
 
-use super::chat::{layout_entries, render_chunks, total_height};
+use super::chat::{View, layout_entries, render_chunks};
 use super::{Rows, columns, render_list, section};
 use crate::app::App;
 use crate::app::ListId;
@@ -24,7 +24,15 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     if inner.height == 0 {
         return;
     }
-    let saving = if app.config.settings.save_logs { "saving to disk" } else { "session only · saving off" };
+    let partners = match app.stats.partners {
+        1 => "1 partner".to_owned(),
+        n => format!("{n} partners"),
+    };
+    let saving = format!(
+        "{} · {partners} · {} chatting",
+        if app.config.settings.save_logs { "saving to disk" } else { "saving off" },
+        crate::stats::human_duration(app.stats.chat_secs)
+    );
     let filter_h = u16::from(app.logs_ui.list.filtering || !app.logs_ui.list.filter.is_empty());
     frame.render_widget(
         Paragraph::new(Span::styled(saving, t.muted().add_modifier(Modifier::DIM))),
@@ -112,9 +120,12 @@ fn draw_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
     if inner.height == 0 || inner.width < 2 {
         return;
     }
-    let chunks = layout_entries(app, entries, inner.width as usize, false);
-    let total = total_height(&chunks);
+    let (you, partner) = conv.names();
+    let view =
+        View { you: you.to_lowercase(), partner: partner.to_lowercase(), typing: false, focus: None, search: None };
+    let laid = layout_entries(app, entries, inner.width as usize, &view);
+    let total = laid.total();
     let max_top = total.saturating_sub(inner.height as usize);
     app.logs_ui.scroll = app.logs_ui.scroll.min(max_top);
-    render_chunks(frame, app, inner, &chunks, app.logs_ui.scroll);
+    render_chunks(frame, app, inner, &laid.chunks, app.logs_ui.scroll, None);
 }

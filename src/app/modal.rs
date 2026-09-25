@@ -36,9 +36,11 @@ pub enum PromptAction {
     SnippetName,
     SnippetText { name: String },
     SnippetRename(usize),
+    SnippetFromMessage { text: String },
     DrawerExport,
     DrawerImport,
     LogRename(usize),
+    CharacterName(String),
     EditorCommand,
     ParagraphBreak,
     RequeueDelay,
@@ -80,6 +82,13 @@ pub enum Modal {
     Profiles {
         selected: usize,
     },
+    /// Fuzzy search over every action, command, setting, profile, theme, snippet and chat.
+    Palette {
+        query: String,
+        selected: usize,
+    },
+    /// Chat statistics.
+    Stats,
     /// Pick a snippet to insert; typing filters.
     Snippets {
         filter: String,

@@ -41,8 +41,11 @@ pub enum Hit {
     NewSession,
     /// An inline image preview in the chat.
     Image(String),
-    /// A chat message containing these links.
-    Message(Vec<String>),
+    /// A chat message (entry index) and the links in it.
+    Message {
+        entry: usize,
+        links: Vec<String>,
+    },
     Row {
         list: ListId,
         index: usize,
@@ -96,7 +99,9 @@ impl App {
             Hit::Session(id) => self.switch_session(id),
             Hit::NewSession => self.new_session(),
             Hit::Image(url) => self.preview(&url),
-            Hit::Message(links) => match links.as_slice() {
+            Hit::Message { entry, links } => match links.as_slice() {
+                // Messages without links get selected (in the live chat, not the logs).
+                [] if self.tab == Tab::Chat => self.select_message(Some(entry)),
                 [] => {}
                 [url] => self.open_link(url),
                 _ => {
@@ -162,7 +167,8 @@ impl App {
                     Modal::Links { selected, .. }
                     | Modal::Profiles { selected }
                     | Modal::Themes { selected, .. }
-                    | Modal::Snippets { selected, .. },
+                    | Modal::Snippets { selected, .. }
+                    | Modal::Palette { selected, .. },
                 ) => {
                     *selected = index;
                     // The theme picker previews whatever is selected.

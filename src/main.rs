@@ -127,6 +127,7 @@ fn main() -> Result<()> {
     }
     let drawer = Drawer::load(&paths.drawer_file)?;
     let (logs, log_warnings) = yap::logs::Logs::load_dir(&paths.logs_dir);
+    let stats = yap::stats::Stats::load(&paths.stats_file);
     let (themes, theme_errors) = yap::theme::load_all(Some(&paths.themes_dir));
     if let Some(name) = &cli.theme
         && !themes.iter().any(|t| &t.name == name)
@@ -159,12 +160,17 @@ fn main() -> Result<()> {
         // Ask the terminal which graphics protocol it speaks (kitty, sixel, iTerm2)
         // before anything else starts reading stdin.
         let picker = if config.settings.images.enabled {
-            Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())
+            yap::images::picker_without_query()
+                .unwrap_or_else(|| Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks()))
         } else {
             Picker::halfblocks()
         };
         let mut app = App::new(paths, config, drawer, themes, picker);
         app.logs = logs;
+        match stats {
+            Ok(stats) => app.stats = stats,
+            Err(e) => app.toast(yap::app::Level::Warning, format!("{e:#}; starting fresh stats")),
+        }
         app.server_override = cli.server;
         if let Some(name) = &cli.theme {
             app.set_theme(name, false);

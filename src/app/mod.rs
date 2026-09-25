@@ -14,14 +14,19 @@ mod matching;
 mod media;
 pub mod modal;
 mod mouse;
+mod names;
+mod palette;
 mod profiles;
 mod sessions;
 pub mod settings;
 mod snippets;
+mod transcript;
 
 pub use compose::{join_paragraphs, split_paragraphs};
 pub use mouse::{Hit, ListId, ViewerButton};
+pub use palette::{PaletteEntry, PaletteItem};
 pub use sessions::{Session, SessionSummary};
+pub use transcript::quote;
 
 pub use keys::prefs_options;
 
@@ -244,6 +249,7 @@ pub struct App {
     pub unseen: usize,
     requeue_at: Option<Instant>,
     skips: u32,
+    pub partner_nick: Option<String>,
     /// Sessions not on screen.
     pub others: Vec<Session>,
     next_session: u64,
@@ -262,6 +268,10 @@ pub struct App {
     pub drawer_ui: DrawerUi,
     pub keymap: Keymap,
     pub logs: Logs,
+    /// All-time stats (persisted) and this run's.
+    pub stats: crate::stats::Stats,
+    pub run_stats: crate::stats::Stats,
+    dirty_stats: bool,
     pub logs_ui: LogsUi,
     /// A resizable copy of the drawer's selected image, for its preview pane.
     pub drawer_preview: Option<(String, ratatui_image::protocol::StatefulProtocol)>,
@@ -306,6 +316,7 @@ impl App {
             unseen,
             requeue_at,
             skips,
+            partner_nick,
         } = Session::new(0);
         App {
             paths,
@@ -327,6 +338,7 @@ impl App {
             unseen,
             requeue_at,
             skips,
+            partner_nick,
             others: Vec::new(),
             next_session: 1,
             background: false,
@@ -341,6 +353,9 @@ impl App {
             drawer_ui: DrawerUi::default(),
             keymap: Keymap::build(&config.settings.keys).0,
             logs: Logs::default(),
+            stats: crate::stats::Stats::starting(Local::now()),
+            run_stats: crate::stats::Stats::starting(Local::now()),
+            dirty_stats: false,
             logs_ui: LogsUi::default(),
             drawer_preview: None,
             traffic,
@@ -401,9 +416,21 @@ impl App {
         self.push(EntryKind::System(text.into()));
     }
 
-    /// The current partner is gone: close their conversation in the logs.
-    fn end_conversation(&mut self) {
-        self.logs.end(self.session_id, Local::now());
+    /// The current partner is gone: close their conversation in the logs and count it.
+    pub(super) fn end_conversation(&mut self) {
+        let now = Local::now();
+        if let Some(conv) = self.logs.live(self.session_id) {
+            let secs = (now - conv.started).num_seconds().max(0) as u64;
+            self.count(|s| s.chat_ended(secs));
+        }
+        self.logs.end(self.session_id, now);
+    }
+
+    /// Update both the all-time and this-run stats.
+    pub(super) fn count(&mut self, f: impl Fn(&mut crate::stats::Stats)) {
+        f(&mut self.stats);
+        f(&mut self.run_stats);
+        self.dirty_stats = true;
     }
 
     pub fn config_changed(&mut self) {
@@ -425,6 +452,11 @@ impl App {
             && let Err(e) = self.drawer.save(&self.paths.drawer_file)
         {
             self.toast(Level::Error, format!("couldn't save drawer: {e:#}"));
+        }
+        if std::mem::take(&mut self.dirty_stats)
+            && let Err(e) = self.stats.save(&self.paths.stats_file)
+        {
+            self.toast(Level::Error, format!("couldn't save stats: {e:#}"));
         }
         if self.config.settings.save_logs
             && let Err(e) = self.logs.save(&self.paths.logs_dir)

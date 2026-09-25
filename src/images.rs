@@ -112,6 +112,45 @@ pub fn decode(bytes: &[u8]) -> Result<DynamicImage, String> {
     reader.decode().map_err(|e| e.to_string())
 }
 
+/// Whether we're certainly in a terminal that speaks the kitty graphics protocol
+/// (kitty itself, or Ghostty), judged from the environment alone.
+pub fn speaks_kitty_graphics(var: impl Fn(&str) -> Option<String>) -> bool {
+    // Inside tmux or screen the outer terminal may differ; leave that to the query.
+    if var("TMUX").is_some() || var("TERM").is_some_and(|t| t.starts_with("screen") || t.starts_with("tmux")) {
+        return false;
+    }
+    var("KITTY_WINDOW_ID").is_some()
+        || var("GHOSTTY_RESOURCES_DIR").is_some()
+        || var("TERM").is_some_and(|t| t == "xterm-kitty" || t == "xterm-ghostty")
+}
+
+/// Cell size in pixels from the window's size, if the terminal reported pixels.
+pub fn cell_size(columns: u16, rows: u16, width_px: u16, height_px: u16) -> Option<(u16, u16)> {
+    if columns == 0 || rows == 0 || width_px == 0 || height_px == 0 {
+        return None;
+    }
+    let (w, h) = (width_px / columns, height_px / rows);
+    (w > 0 && h > 0).then_some((w, h))
+}
+
+/// Choose how to draw images without asking the terminal when we can avoid it.
+///
+/// Asking works everywhere but has a cost: if the terminal never answers, the helper
+/// thread waiting for the answer swallows the user's first keypress. In kitty and
+/// Ghostty we already know the answer, and the cell size comes from `TIOCGWINSZ`.
+pub fn picker_without_query() -> Option<Picker> {
+    if !speaks_kitty_graphics(|k| std::env::var(k).ok()) {
+        return None;
+    }
+    let size = ratatui::crossterm::terminal::window_size().ok()?;
+    let (w, h) = cell_size(size.columns, size.rows, size.width, size.height)?;
+    // Deprecated upstream in favour of querying, which is exactly what we're avoiding.
+    #[allow(deprecated)]
+    let mut picker = Picker::from_fontsize(ratatui_image::FontSize::new(w, h));
+    picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
+    Some(picker)
+}
+
 /// A decoded image, pre-encoded for inline display.
 pub struct Loaded {
     pub inline: SlicedProtocol,
@@ -306,6 +345,27 @@ mod tests {
         assert_eq!(first.file_name().unwrap(), "a.png");
         assert_eq!(second.file_name().unwrap(), "a-1.png");
         assert_eq!(std::fs::read(second).unwrap(), bytes);
+    }
+
+    #[test]
+    fn detects_kitty_like_terminals_from_the_environment() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| pairs.iter().find(|(key, _)| *key == k).map(|(_, v)| v.to_string())
+        };
+        assert!(speaks_kitty_graphics(env(&[("KITTY_WINDOW_ID", "1")])));
+        assert!(speaks_kitty_graphics(env(&[("TERM", "xterm-kitty")])));
+        assert!(speaks_kitty_graphics(env(&[("GHOSTTY_RESOURCES_DIR", "/usr/share/ghostty")])));
+        assert!(!speaks_kitty_graphics(env(&[("TERM", "xterm-256color")])));
+        assert!(!speaks_kitty_graphics(env(&[("KITTY_WINDOW_ID", "1"), ("TMUX", "/tmp/tmux")])));
+        assert!(!speaks_kitty_graphics(env(&[("TERM", "screen-256color"), ("KITTY_WINDOW_ID", "1")])));
+    }
+
+    #[test]
+    fn cell_size_from_pixels() {
+        assert_eq!(cell_size(100, 40, 1000, 800), Some((10, 20)));
+        assert_eq!(cell_size(100, 40, 0, 0), None, "terminal didn't report pixels");
+        assert_eq!(cell_size(0, 40, 1000, 800), None);
+        assert_eq!(cell_size(100, 40, 50, 800), None);
     }
 
     #[test]

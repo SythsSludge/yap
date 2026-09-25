@@ -53,6 +53,92 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             frame.render_widget(Clear, rect);
             frame.render_widget(Paragraph::new(body).block(frame_block(app, "Confirm")), rect);
         }
+        Modal::Stats => {
+            use crate::stats::human_duration;
+            let rect = centered(area, 60, 14);
+            frame.render_widget(Clear, rect);
+            let block = frame_block(app, "Stats");
+            let inner = block.inner(rect);
+            frame.render_widget(block, rect);
+            let (run, all) = (&app.run_stats, &app.stats);
+            let row = |label: &str, now: String, ever: String| {
+                Line::from(vec![
+                    Span::styled(format!("{label:<22}"), Style::new().fg(t.muted)),
+                    Span::styled(format!("{now:>12}"), Style::new().fg(t.fg)),
+                    Span::styled(format!("{ever:>14}"), Style::new().fg(t.fg).bold()),
+                ])
+            };
+            let since = all.since.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_else(|| "—".into());
+            let lines = vec![
+                Line::from(vec![
+                    Span::raw(" ".repeat(22)),
+                    Span::styled(format!("{:>12}", "this session"), Style::new().fg(t.muted)),
+                    Span::styled(format!("{:>14}", format!("since {since}")), Style::new().fg(t.muted)),
+                ]),
+                Line::default(),
+                row("partners met", run.partners.to_string(), all.partners.to_string()),
+                row("auto-skipped", run.skipped.to_string(), all.skipped.to_string()),
+                row("messages sent", run.sent.to_string(), all.sent.to_string()),
+                row("messages received", run.received.to_string(), all.received.to_string()),
+                row("time chatting", human_duration(run.chat_secs), human_duration(all.chat_secs)),
+                row("average chat", human_duration(run.average_secs()), human_duration(all.average_secs())),
+                row("longest chat", human_duration(run.longest_secs), human_duration(all.longest_secs)),
+                Line::default(),
+                Line::from(Span::styled("kept on this machine only", Style::new().fg(t.muted))),
+            ];
+            frame.render_widget(Paragraph::new(lines), inner);
+        }
+        Modal::Palette { query, selected } => {
+            let matches = app.palette_matches(query);
+            let w = 84.min(area.width.saturating_sub(4));
+            let h = (matches.len() as u16 + 4).clamp(6, 20).min(area.height.saturating_sub(2));
+            // Sit in the upper third, like Claude Code's.
+            let rect = Rect::new(area.x + (area.width - w) / 2, area.y + area.height / 6, w, h);
+            frame.render_widget(Clear, rect);
+            let block = frame_block(app, "Palette");
+            let inner = block.inner(rect);
+            frame.render_widget(block, rect);
+            if inner.height < 2 {
+                return;
+            }
+            let input = Line::from(vec![
+                Span::styled("> ", Style::new().fg(t.accent).bold()),
+                Span::styled(query.clone(), Style::new().fg(t.fg)),
+                Span::styled(
+                    if query.is_empty() { "search actions, commands, settings, snippets…" } else { "" },
+                    Style::new().fg(t.muted),
+                ),
+            ]);
+            frame.render_widget(Paragraph::new(input), Rect::new(inner.x, inner.y, inner.width, 1));
+            frame.set_cursor_position(ratatui::layout::Position::new(
+                inner.x + 2 + (crate::text::width(query) as u16).min(inner.width.saturating_sub(3)),
+                inner.y,
+            ));
+            let list_area = Rect::new(inner.x, inner.y + 2, inner.width, inner.height.saturating_sub(2));
+            let label_w = list_area.width.saturating_sub(24) as usize;
+            let items: Vec<ListItem> = matches
+                .iter()
+                .map(|e| {
+                    ListItem::new(Line::from(vec![
+                        Span::styled(
+                            format!("{:<w$}", truncate(&e.label, label_w), w = label_w),
+                            Style::new().fg(t.fg),
+                        ),
+                        Span::styled(format!(" {:>8}", e.kind), Style::new().fg(t.muted)),
+                        Span::styled(format!(" {:>10}", truncate(&e.hint, 10)), Style::new().fg(t.accent)),
+                    ]))
+                })
+                .collect();
+            if items.is_empty() {
+                frame.render_widget(
+                    Paragraph::new(Span::styled("nothing matches", Style::new().fg(t.muted))),
+                    list_area,
+                );
+            } else {
+                let selected = Some((*selected).min(items.len() - 1));
+                super::render_list(frame, app, list_area, items, super::Rows::new(ListId::Modal, selected, true));
+            }
+        }
         Modal::Snippets { filter, selected } => {
             let visible = app.drawer.filtered_snippets(filter);
             let h = (visible.len() as u16 + 5).clamp(7, area.height.saturating_sub(2));

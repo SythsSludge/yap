@@ -76,7 +76,10 @@ impl App {
 
     pub(super) fn save_log(&mut self, path: &str) {
         let path = config::expand_tilde(path);
-        match config::write_atomic(&path, &self.chat.transcript()) {
+        let you =
+            Some(self.config.active().character.clone()).filter(|c| !c.is_empty()).unwrap_or_else(|| "You".into());
+        let partner = self.partner_nick.clone().unwrap_or_else(|| "Partner".into());
+        match config::write_atomic(&path, &self.chat.transcript(&you, &partner)) {
             Ok(()) => self.toast(Level::Success, format!("Saved transcript to {}", path.display())),
             Err(e) => self.toast(Level::Error, format!("Couldn't save transcript: {e:#}")),
         }

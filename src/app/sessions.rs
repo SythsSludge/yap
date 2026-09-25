@@ -28,6 +28,8 @@ pub struct Session {
     pub requeue_at: Option<Instant>,
     /// Consecutive partners skipped by the auto-skip rules.
     pub skips: u32,
+    /// What you've called the current partner (`/nick`).
+    pub partner_nick: Option<String>,
 }
 
 impl Session {
@@ -47,6 +49,7 @@ impl Session {
             unseen: 0,
             requeue_at: None,
             skips: 0,
+            partner_nick: None,
         }
     }
 }
@@ -63,8 +66,9 @@ pub struct SessionSummary {
     pub online: bool,
 }
 
-fn describe(status: &ConnStatus, partner: &PartnerState) -> String {
+fn describe(status: &ConnStatus, partner: &PartnerState, nick: Option<&str>) -> String {
     match (status, partner) {
+        (_, PartnerState::Connected(_)) if nick.is_some() => nick.unwrap_or_default().to_owned(),
         (_, PartnerState::Connected(info)) => format!("{} {}", info.gender, info.species).to_lowercase(),
         (_, PartnerState::Searching) => "searching".into(),
         (ConnStatus::Online, PartnerState::None) => "idle".into(),
@@ -91,6 +95,7 @@ impl App {
             unseen,
             requeue_at,
             skips,
+            partner_nick,
         } = other;
         std::mem::swap(&mut self.session_id, id);
         std::mem::swap(&mut self.status, status);
@@ -106,6 +111,7 @@ impl App {
         std::mem::swap(&mut self.unseen, unseen);
         std::mem::swap(&mut self.requeue_at, requeue_at);
         std::mem::swap(&mut self.skips, skips);
+        std::mem::swap(&mut self.partner_nick, partner_nick);
     }
 
     /// Run `f` with session `id` swapped in as the current one. Returns `None` if there's
@@ -159,7 +165,7 @@ impl App {
                 id: s.id,
                 number: 0,
                 active: false,
-                label: describe(&s.status, &s.partner),
+                label: describe(&s.status, &s.partner, s.partner_nick.as_deref()),
                 unseen: s.unseen,
                 online: s.status == ConnStatus::Online,
             })
@@ -167,7 +173,7 @@ impl App {
                 id: self.session_id,
                 number: 0,
                 active: true,
-                label: describe(&self.status, &self.partner),
+                label: describe(&self.status, &self.partner, self.partner_nick.as_deref()),
                 unseen: self.unseen,
                 online: self.is_online(),
             }])
@@ -239,7 +245,7 @@ impl App {
         }
         self.closing = true;
         self.effect(Effect::CloseSocket);
-        self.logs.end(self.session_id, Local::now());
+        self.end_conversation();
         let number = self.session_number();
         // Bring the nearest other session forward; the closed one is dropped.
         let index = self.others.iter().rposition(|s| s.id < self.session_id).unwrap_or(0);

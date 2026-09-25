@@ -1,6 +1,6 @@
 use super::modal::{Confirm, Modal};
 use super::*;
-use super::{EditorPurpose, Hit, ListId, Shelf, ViewerButton};
+use super::{EditorPurpose, Hit, ListId, PaletteItem, Shelf, ViewerButton};
 use crate::config::Paths;
 use crate::prefs::Preferences;
 use crate::protocol::WirePreferences;
@@ -1308,7 +1308,8 @@ fn clicking_links_images_and_viewer_buttons() {
     h.server(ServerMessage::ReceiveMessage("gallery: https://example.com/g".into()));
     h.take_effects();
     frame(&mut h);
-    click_on(&mut h, &Hit::Message(vec!["https://example.com/g".into()]));
+    let entry = h.chat.entries.len() - 1;
+    click_on(&mut h, &Hit::Message { entry, links: vec!["https://example.com/g".into()] });
     assert_eq!(h.take_effects(), vec![Effect::OpenUrl("https://example.com/g".into())]);
 
     // A loaded inline image opens the viewer; its buttons work.
@@ -1347,4 +1348,151 @@ fn clicking_sessions_and_new_chat() {
     assert_eq!(h.session_id, 0);
     click_on(&mut h, &Hit::NewSession);
     assert_eq!(h.session_count(), 3);
+}
+
+// ----- roleplay names, select, search, palette, stats -------------------------------
+
+#[test]
+fn character_names_and_nicknames() {
+    let mut h = harness().online().with_prefs();
+    h.run_command(Command::Name(Some("Ember".into())));
+    assert_eq!(h.config.active().character, "Ember");
+    assert_eq!(h.my_label(), "Ember");
+    h.run_command(Command::Nick(Some("Rook".into())));
+    assert_eq!(h.last_toast(), Some("Nicknames are for the partner you're chatting with."));
+
+    let mut h = h.partnered();
+    h.run_command(Command::Nick(Some("Rook".into())));
+    assert_eq!(h.partner_label(), "Rook");
+    assert_eq!(h.sessions()[0].label, "Rook");
+    assert_eq!(h.logs.live(0).unwrap().names(), ("Ember".into(), "Rook".into()));
+    h.run_command(Command::SnipAdd { name: "hi".into(), text: "{me} waves at {partner}".into() });
+    h.run_command(Command::Snip(Some("hi".into())));
+    assert_eq!(h.input.text(), "Ember waves at Rook");
+
+    // A new partner starts without the old nickname.
+    let h = h.partnered();
+    assert_eq!(h.partner_label(), "partner");
+}
+
+#[test]
+fn select_mode_quotes_copies_and_saves() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.server(ServerMessage::ReceiveMessage("first".into()));
+    h.server(ServerMessage::ReceiveMessage("look https://e621.net/posts/9 *grins*".into()));
+    h.type_str("draft");
+    h.on_terminal(Event::Key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::ALT)));
+    let last = h.chat.entries.len() - 1;
+    assert_eq!(h.chat.mode, chat::ChatMode::Select(last));
+    h.press(KeyCode::Up);
+    assert!(
+        matches!(h.chat.mode, chat::ChatMode::Select(i) if h.chat.entries[i].kind == EntryKind::Partner("first".into()))
+    );
+    h.press(KeyCode::Char('y'));
+    assert!(h.take_effects().contains(&Effect::Copy("first".into())));
+    h.press(KeyCode::Down);
+    h.press(KeyCode::Char('s'));
+    assert!(matches!(&h.modal, Some(Modal::Prompt(p)) if p.editor.text().contains("e621.net")));
+    h.press(KeyCode::Esc);
+    h.press(KeyCode::Enter);
+    assert_eq!(h.chat.mode, chat::ChatMode::Normal);
+    assert!(h.input.text().starts_with("> \"look https://e621.net/posts/9 *grins*\" draft"), "{}", h.input.text());
+}
+
+#[test]
+fn select_mode_saves_message_as_snippet() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.type_str("my go-to intro line");
+    h.press(KeyCode::Enter);
+    h.run_command(Command::Select);
+    h.press(KeyCode::Char('n'));
+    h.type_str("intro");
+    h.press(KeyCode::Enter);
+    assert_eq!(h.drawer.snippet("intro").unwrap().text, "my go-to intro line");
+}
+
+#[test]
+fn searching_the_chat() {
+    let mut h = harness().online().with_prefs().partnered();
+    for text in ["the old lighthouse", "something else", "LIGHTHOUSE again"] {
+        h.server(ServerMessage::ReceiveMessage(text.into()));
+    }
+    h.run_command(Command::Search(None));
+    h.type_str("lighthouse");
+    let chat::ChatMode::Search(s) = &h.chat.mode else { panic!() };
+    assert_eq!(s.hits.len(), 2);
+    assert_eq!(s.current, 1, "starts at the newest hit");
+    assert!(s.editing);
+    h.press(KeyCode::Enter);
+    h.press(KeyCode::Char('n'));
+    let chat::ChatMode::Search(s) = &h.chat.mode else { panic!() };
+    assert_eq!(h.chat.entries[s.current_entry().unwrap()].kind, EntryKind::Partner("the old lighthouse".into()));
+    // Enter selects the hit for quoting.
+    h.press(KeyCode::Enter);
+    assert!(matches!(h.chat.mode, chat::ChatMode::Select(_)));
+    h.press(KeyCode::Esc);
+    h.run_command(Command::Search(Some("volcano".into())));
+    assert!(h.last_toast().unwrap().contains("Nothing in this chat matches"));
+    h.press(KeyCode::Esc);
+    assert_eq!(h.chat.mode, chat::ChatMode::Normal);
+    // Typing works normally again.
+    h.type_str("hi");
+    assert_eq!(h.input.text(), "hi");
+}
+
+#[test]
+fn clicking_a_plain_message_selects_it() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.server(ServerMessage::ReceiveMessage("no links here".into()));
+    frame(&mut h);
+    let entry = h.chat.entries.len() - 1;
+    click_on(&mut h, &Hit::Message { entry, links: vec![] });
+    assert_eq!(h.chat.mode, chat::ChatMode::Select(entry));
+}
+
+#[test]
+fn palette_finds_and_runs_everything() {
+    let mut h = harness().online().with_prefs();
+    h.run_command(Command::SnipAdd { name: "intro".into(), text: "hello".into() });
+    h.ctrl('k');
+    assert!(matches!(h.modal, Some(Modal::Palette { .. })));
+    h.type_str("theme nord");
+    let top = h.palette_matches("theme nord");
+    assert_eq!(top[0].item, PaletteItem::Theme("nord".into()));
+    h.press(KeyCode::Enter);
+    assert_eq!(h.config.settings.theme, "nord");
+
+    assert_eq!(h.palette_matches("snippet intro")[0].item, PaletteItem::Snippet(0));
+    assert!(matches!(h.palette_matches("transparent")[0].item, PaletteItem::Setting(settings::Row::Transparent)));
+    assert_eq!(h.palette_matches("find a partner")[0].item, PaletteItem::Action(crate::keymap::Action::Find));
+
+    // Commands that take arguments are started in the message box.
+    h.run_palette_item(PaletteItem::Command("/nick [name]"));
+    assert!(h.last_toast().unwrap().contains("Nicknames"), "no-arg form runs directly");
+    h.run_palette_item(PaletteItem::Command("/snip-add <name> <text>"));
+    assert_eq!(h.input.text(), "/snip-add ");
+    assert!(h.palette_matches("zzzzqqq").is_empty());
+}
+
+#[test]
+fn stats_count_the_session_and_persist() {
+    let mut h = harness().online().with_prefs();
+    h.config.active_mut().preferences.toggle(Field::Limits, "Scat");
+    h.ctrl('f');
+    connected_to(&mut h, "Scat", None);
+    let mut h = h.partnered();
+    h.server(ServerMessage::ReceiveMessage("hey".into()));
+    h.type_str("hi");
+    h.press(KeyCode::Enter);
+    h.server(ServerMessage::PartnerLeft);
+    for s in [&h.stats, &h.run_stats] {
+        assert_eq!((s.partners, s.skipped, s.sent, s.received, s.chats), (1, 1, 1, 1, 1));
+    }
+    h.flush();
+    let saved = crate::stats::Stats::load(&h.paths.stats_file).unwrap();
+    assert_eq!(saved.partners, 1);
+    h.run_command(Command::Stats);
+    assert!(matches!(h.modal, Some(Modal::Stats)));
+    h.press(KeyCode::Char('x'));
+    assert!(h.modal.is_none());
 }

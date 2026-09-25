@@ -201,10 +201,13 @@ impl App {
         let page = self.chat.page();
         match action {
             Action::Help => self.modal = Some(Modal::Help { scroll: 0 }),
+            Action::Palette => self.open_palette(),
             Action::Find => self.request_find(),
             Action::Next => self.next_partner(),
             Action::Snippets => self.open_snippet_picker(),
             Action::Editor => self.compose_in_editor(),
+            Action::SelectMessage => self.select_message(None),
+            Action::SearchChat => self.start_search(None),
             Action::Leave => self.request_leave(),
             Action::Block => self.request_block(),
             Action::Links => self.open_links(),
@@ -241,6 +244,9 @@ impl App {
     // ----- chat -----------------------------------------------------------------
 
     fn chat_key(&mut self, key: KeyEvent) {
+        if self.transcript_key(key) {
+            return;
+        }
         if self.chat_focus == ChatFocus::Drawer && self.drawer_panel {
             return self.chat_drawer_key(key);
         }
@@ -340,6 +346,15 @@ impl App {
             }
             KeyCode::Right | KeyCode::Char('l') => self.prefs_ui.pane = PrefsPane::Fields,
             KeyCode::Char('n') => self.open_prompt("New profile name", "", PromptAction::NewProfile),
+            KeyCode::Char('m') => {
+                let current =
+                    self.config.profiles[self.prefs_ui.profile.min(self.config.profiles.len() - 1)].character.clone();
+                self.open_prompt(
+                    &format!("Character name for `{name}` (empty: \"you\")"),
+                    &current,
+                    PromptAction::CharacterName(name),
+                );
+            }
             KeyCode::Char('c') => {
                 let suggestion = self.config.unique_profile_name(&format!("{name} copy"));
                 self.open_prompt(&format!("Copy `{name}` as"), &suggestion, PromptAction::CloneProfile(name));
@@ -885,6 +900,44 @@ impl App {
                     None
                 }
             }
+            Modal::Stats => None,
+            Modal::Palette { mut query, mut selected } => {
+                let len = self.palette_matches(&query).len();
+                match key.code {
+                    KeyCode::Esc => None,
+                    KeyCode::Enter => {
+                        if let Some(entry) = self.palette_matches(&query).into_iter().nth(selected) {
+                            self.run_palette_item(entry.item);
+                        }
+                        None
+                    }
+                    KeyCode::Up => {
+                        step(&mut selected, len, -1);
+                        Some(Modal::Palette { query, selected })
+                    }
+                    KeyCode::Down | KeyCode::Tab => {
+                        step(&mut selected, len, 1);
+                        Some(Modal::Palette { query, selected })
+                    }
+                    KeyCode::PageUp => {
+                        step(&mut selected, len, -8);
+                        Some(Modal::Palette { query, selected })
+                    }
+                    KeyCode::PageDown => {
+                        step(&mut selected, len, 8);
+                        Some(Modal::Palette { query, selected })
+                    }
+                    KeyCode::Backspace => {
+                        query.pop();
+                        Some(Modal::Palette { query, selected: 0 })
+                    }
+                    KeyCode::Char(c) if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+                        query.push(c);
+                        Some(Modal::Palette { query, selected: 0 })
+                    }
+                    _ => Some(Modal::Palette { query, selected }),
+                }
+            }
             Modal::Snippets { mut filter, mut selected } => {
                 let visible = self.drawer.filtered_snippets(&filter);
                 match key.code {
@@ -1013,6 +1066,11 @@ impl App {
                     }
                 }
             }
+            PromptAction::SnippetFromMessage { text: body } => {
+                if let Some(i) = self.add_snippet(&text, &body) {
+                    self.drawer_ui.snippets.selected = i;
+                }
+            }
             PromptAction::SnippetRename(i) => match self.drawer.rename_snippet(i, &text) {
                 Ok(()) => self.drawer_changed(),
                 Err(e) => self.toast(Level::Error, e.to_string()),
@@ -1020,6 +1078,12 @@ impl App {
             PromptAction::DrawerExport => self.export_drawer(&text),
             PromptAction::DrawerImport => self.import_drawer(&text),
             PromptAction::LogRename(i) => self.logs.rename(i, &text),
+            PromptAction::CharacterName(profile) => {
+                if let Some(p) = self.config.profiles.iter_mut().find(|p| p.name == profile) {
+                    p.character = crate::text::sanitize(&text).replace('\n', " ");
+                    self.config_changed();
+                }
+            }
             PromptAction::EditorCommand => {
                 self.config.settings.editor = text;
                 self.config_changed();

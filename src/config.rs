@@ -148,6 +148,8 @@ pub struct Settings {
     pub chat_style: ChatStyle,
     /// Don't paint a background, so a transparent terminal shows through.
     pub transparent_background: bool,
+    /// Show `*actions*` in italics and `((asides))` dimmed. Display only.
+    pub rp_formatting: bool,
     /// Start each partner in a fresh chat view instead of one endless scroll. Earlier
     /// chats stay available in the Logs tab either way.
     pub split_chats: bool,
@@ -184,6 +186,7 @@ impl Default for Settings {
             timestamps: true,
             chat_style: ChatStyle::default(),
             transparent_background: false,
+            rp_formatting: true,
             split_chats: false,
             save_logs: false,
             show_sidebar: true,
@@ -205,6 +208,9 @@ impl Default for Settings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Profile {
     pub name: String,
+    /// Your character's name, shown instead of "you" in chats with this profile.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub character: String,
     #[serde(default)]
     pub preferences: Preferences,
 }
@@ -222,7 +228,11 @@ impl Default for Config {
         Config {
             active_profile: "default".into(),
             settings: Settings::default(),
-            profiles: vec![Profile { name: "default".into(), preferences: Preferences::default() }],
+            profiles: vec![Profile {
+                name: "default".into(),
+                character: String::new(),
+                preferences: Preferences::default(),
+            }],
         }
     }
 }
@@ -245,7 +255,11 @@ impl Config {
     pub fn normalize(&mut self) -> Vec<String> {
         let mut warnings = Vec::new();
         if self.profiles.is_empty() {
-            self.profiles.push(Profile { name: "default".into(), preferences: Preferences::default() });
+            self.profiles.push(Profile {
+                name: "default".into(),
+                character: String::new(),
+                preferences: Preferences::default(),
+            });
         }
         let mut seen = std::collections::HashSet::new();
         for i in 0..self.profiles.len() {
@@ -312,7 +326,7 @@ impl Config {
 
     pub fn create_profile(&mut self, name: &str, preferences: Preferences) -> Result<String, ProfileError> {
         let name = self.check_new_name(name)?;
-        self.profiles.push(Profile { name: name.clone(), preferences });
+        self.profiles.push(Profile { name: name.clone(), character: String::new(), preferences });
         Ok(name)
     }
 
@@ -428,7 +442,10 @@ impl ExportDoc {
                 return serde_json::from_value(value).context("invalid yap export");
             }
             if let Some(prefs) = Preferences::from_web_local_storage(&value) {
-                return Ok(ExportDoc::new(vec![Profile { name: web_name.into(), preferences: prefs }], None));
+                return Ok(ExportDoc::new(
+                    vec![Profile { name: web_name.into(), character: String::new(), preferences: prefs }],
+                    None,
+                ));
             }
             bail!("JSON is neither a yap export nor a yiffspot.com localStorage dump");
         }
@@ -509,6 +526,7 @@ pub struct Paths {
     pub logs_dir: PathBuf,
     /// Where "save image" puts files.
     pub downloads_dir: PathBuf,
+    pub stats_file: PathBuf,
     pub data_dir: PathBuf,
 }
 
@@ -522,6 +540,7 @@ impl Paths {
             themes_dir: dirs.config_dir().join("themes"),
             drawer_file: dirs.data_dir().join("drawer.toml"),
             logs_dir: dirs.data_dir().join("logs"),
+            stats_file: dirs.data_dir().join("stats.toml"),
             downloads_dir: directories::UserDirs::new()
                 .and_then(|d| d.download_dir().map(Path::to_path_buf))
                 .or_else(|| directories::BaseDirs::new().map(|d| d.home_dir().join("Downloads")))
@@ -538,6 +557,7 @@ impl Paths {
             themes_dir: dir.join("themes"),
             drawer_file: dir.join("drawer.toml"),
             logs_dir: dir.join("logs"),
+            stats_file: dir.join("stats.toml"),
             downloads_dir: dir.join("downloads"),
             data_dir: dir.to_owned(),
         }
@@ -553,7 +573,7 @@ mod tests {
     fn named(name: &str, species: &str) -> Profile {
         let mut preferences = Preferences::default();
         preferences.toggle(Field::Species, species);
-        Profile { name: name.into(), preferences }
+        Profile { name: name.into(), character: String::new(), preferences }
     }
 
     #[test]
