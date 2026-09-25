@@ -73,6 +73,17 @@ enum Cmd {
     /// Run as an MCP server for an AI app (it starts this; you don't). Talks to the
     /// yap you have open, if Settings → AI tools is on.
     Mcp,
+    /// Print shell completions (bash, zsh, fish, elvish, powershell) for packaging.
+    #[command(hide = true)]
+    Completions {
+        shell: clap_complete::Shell,
+        /// The command name to complete (`yiff` is the other name yap installs as).
+        #[arg(long, default_value = "yap")]
+        bin: String,
+    },
+    /// Print the man page (roff) for packaging.
+    #[command(hide = true)]
+    Manpage,
     /// List available themes.
     Themes,
     /// Show where yap keeps its files.
@@ -81,6 +92,19 @@ enum Cmd {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    // These only describe the command line, so they must work without a config (e.g.
+    // while a package is being built).
+    match &cli.command {
+        Some(Cmd::Completions { shell, bin }) => {
+            clap_complete::generate(*shell, &mut <Cli as clap::CommandFactory>::command(), bin, &mut std::io::stdout());
+            return Ok(());
+        }
+        Some(Cmd::Manpage) => {
+            clap_mangen::Man::new(<Cli as clap::CommandFactory>::command()).render(&mut std::io::stdout())?;
+            return Ok(());
+        }
+        _ => {}
+    }
     let paths = Paths::discover(cli.config.clone())?;
     let first_run = !paths.config_file.exists();
     let (mut config, warnings) = Config::load(&paths.config_file)?;
@@ -129,6 +153,7 @@ fn main() -> Result<()> {
             #[cfg(not(unix))]
             bail!("yap mcp needs a Unix system for now");
         }
+        Some(Cmd::Completions { .. } | Cmd::Manpage) => unreachable!("handled above"),
         Some(Cmd::Themes) => {
             let (themes, errors) = yap::theme::load_all(Some(&paths.themes_dir));
             for t in themes {

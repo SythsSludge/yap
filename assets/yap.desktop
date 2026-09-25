@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=yap
+GenericName=YiffSpot Chat
+Comment=Terminal client for YiffSpot, the anonymous furry roleplay chat (18+)
+Exec=yap
+Terminal=true
+Icon=utilities-terminal
+Categories=Network;Chat;InstantMessaging;ConsoleOnly;
+Keywords=yiffspot;chat;roleplay;furry;tui;

@@ -1,0 +1,22 @@
+pkgbase = yap-yiffspot
+	pkgdesc = Terminal client for YiffSpot, the anonymous furry roleplay chat (18+)
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/SythsSludge/yap
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	makedepends = cargo
+	depends = gcc-libs
+	depends = glibc
+	optdepends = hunspell-en_gb: British English spellcheck (or any other hunspell dictionary)
+	optdepends = pipewire-audio: notification sounds (pw-play)
+	conflicts = yap
+	conflicts = yap-bin
+	conflicts = yap-git
+	conflicts = yap-yiffspot-git
+	options = !lto
+	source = yap-0.1.0.tar.gz::https://github.com/SythsSludge/yap/archive/refs/tags/v0.1.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = yap-yiffspot

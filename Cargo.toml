@@ -2,12 +2,25 @@
 name = "yap"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.90"
+description = "A terminal client for YiffSpot, the anonymous furry roleplay chat (18+)"
+license = "MIT"
+authors = ["Syth"]
+repository = "https://github.com/SythsSludge/yap"
+homepage = "https://github.com/SythsSludge/yap"
+readme = "README.md"
+keywords = ["tui", "chat", "terminal", "roleplay", "ratatui"]
+categories = ["command-line-utilities"]
+# The upstream source is only there for reference while developing.
+exclude = ["vendor/", "target/", ".github/", "packaging/"]
 
 [dependencies]
 anyhow = "1.0.104"
 base64 = "0.23.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.7", features = ["derive"] }
+clap_complete = "4.6.11"
+clap_mangen = "0.3.3"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 directories = "6.0.0"
 emojis = "0.9.0"
@@ -33,3 +46,8 @@ url = "2.5.8"
 [dev-dependencies]
 insta = "1.48.0"
 pretty_assertions = "1.4.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

@@ -111,10 +111,32 @@ indicator, block, disconnect, themes, notifications), plus the following:
 - **Traffic viewer**: every websocket frame in both directions, including handshake
   headers and ping/pong. Supports filtering, pretty JSON, sending raw frames and JSONL export.
 
+## Installing
+
+yap installs as `yap`, with `yiff` as a second name for the same program.
+
+**Arch Linux (AUR)**: `yap-yiffspot` builds the latest release, `yap-yiffspot-git`
+the latest commit:
+
+```sh
+paru -S yap-yiffspot     # or yay, or any AUR helper
+```
+
+**From source** (Rust 1.90 or newer):
+
+```sh
+git clone https://github.com/SythsSludge/yap && cd yap
+make && sudo make install            # /usr/local; or: make install PREFIX=~/.local
+```
+
+`make install` also installs bash, zsh and fish completions, the man page and a
+desktop entry (`sudo make uninstall` removes it all). For just the binary:
+`cargo install --locked --git https://github.com/SythsSludge/yap`.
+
 ## Running
 
 ```sh
-cargo run --release
+yap          # or yiff
 ```
 
 ```

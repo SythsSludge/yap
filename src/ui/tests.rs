@@ -490,15 +490,24 @@ fn stats_show_when_to_look() {
 
 #[test]
 fn long_pauses_and_new_days_get_a_line() {
+    use chrono::TimeZone;
+    let at = |d, h, m| chrono::Local.with_ymd_and_hms(2026, 1, d, h, m, 0).unwrap();
+    let today = at(7, 12, 0).date_naive();
+    assert_eq!(super::chat::gap_label(at(7, 9, 0), at(7, 9, 5), today), None, "a short pause");
+    assert_eq!(super::chat::gap_label(at(7, 9, 0), at(7, 9, 40), today).as_deref(), Some("09:40"));
+    assert_eq!(super::chat::gap_label(at(6, 23, 50), at(7, 0, 5), today).as_deref(), Some("Today"));
+    assert_eq!(super::chat::gap_label(at(5, 23, 50), at(6, 0, 5), today).as_deref(), Some("Yesterday"));
+    assert_eq!(super::chat::gap_label(at(1, 9, 0), at(2, 9, 0), today).as_deref(), Some("Fri 2 Jan"));
+
+    // And they show up in the transcript.
     let mut h = chatting();
-    let now = chrono::Local::now();
     let n = h.chat.entries.len();
     for (i, e) in h.chat.entries.iter_mut().enumerate() {
-        e.at = now - chrono::TimeDelta::minutes(30 * (n - i) as i64);
+        e.at = at(2, 10, 0) + chrono::TimeDelta::minutes(30 * i as i64);
     }
-    h.chat.entries[0].at = now - chrono::TimeDelta::days(1) - chrono::TimeDelta::hours(1);
+    h.chat.entries[0].at = at(1, 10, 0);
     let screen = render(&mut h, 110, 40);
-    assert!(screen.contains(" Today "), "{screen}");
+    assert!(screen.contains(" Fri 2 Jan "), "{screen}");
     let time = h.chat.entries[n - 1].at.format("%H:%M").to_string();
     assert!(screen.contains(&format!(" {time} ")), "{screen}");
 }

@@ -240,9 +240,8 @@ fn width_of_label(label: &str) -> usize {
 
 /// What to mark between two entries: the day when it changes, the time after a
 /// long pause, or nothing.
-fn gap_label(prev: DateTime<Local>, next: DateTime<Local>) -> Option<String> {
+pub(super) fn gap_label(prev: DateTime<Local>, next: DateTime<Local>, today: chrono::NaiveDate) -> Option<String> {
     if next.date_naive() != prev.date_naive() {
-        let today = Local::now().date_naive();
         let day = next.date_naive();
         return Some(if day == today {
             "Today".into()
@@ -460,9 +459,10 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, view: &
     let name_col = crate::text::width(&view.you).max(crate::text::width(&view.partner)).clamp(7, 16) + 2;
 
     let mut previous: Option<DateTime<Local>> = None;
+    let today = Local::now().date_naive();
     for (index, entry) in entries.iter().enumerate() {
         // A quiet line where the day changes or after a long pause.
-        if let Some(label) = previous.and_then(|prev| gap_label(prev, entry.at)) {
+        if let Some(label) = previous.and_then(|prev| gap_label(prev, entry.at, today)) {
             let side = width.saturating_sub(width_of_label(&label)) / 2;
             let rule = t.muted().add_modifier(Modifier::DIM);
             out.push(Chunk::Lines(vec![Line::default()]));
