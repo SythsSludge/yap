@@ -35,6 +35,24 @@ pub enum Command {
     Raw(String),
     /// Save the chat transcript to a file.
     SaveLog(String),
+    /// Open another chat session.
+    NewChat,
+    /// Close the current chat session.
+    CloseChat,
+    /// Switch to chat session N (1-based).
+    SwitchChat(usize),
+    /// Leave and search again without asking.
+    Next,
+    /// Insert a snippet, or open the picker with no name.
+    Snip(Option<String>),
+    SnipAdd {
+        name: String,
+        text: String,
+    },
+    /// Write the message in the external editor.
+    Edit,
+    DrawerExport(String),
+    DrawerImport(String),
 }
 
 /// What the input line turned out to be.
@@ -47,15 +65,21 @@ pub enum Parsed {
 
 pub const HELP: &[(&str, &str)] = &[
     ("/find", "find a (new) partner with the active profile"),
+    ("/next", "skip to a new partner without asking"),
     ("/leave", "disconnect from your partner"),
     ("/block", "block and leave your partner"),
     ("/save <url> [label] [#tags]", "add a link to the drawer"),
+    ("/snip [name]", "insert a snippet (no name: pick one)"),
+    ("/snip-add <name> <text>", "save a snippet; {species} etc. are filled in"),
+    ("/edit", "write the message in your editor"),
     ("/profile [name]", "switch preference profile"),
     ("/theme [name]", "switch theme"),
     ("/export <path>", "export all profiles and settings (.toml/.json)"),
     ("/export-profile <path>", "export the active profile"),
     ("/import <path>", "import profiles (also yiffspot localStorage JSON)"),
     ("/import-all <path>", "import profiles and settings"),
+    ("/drawer-export <path>", "export links and snippets"),
+    ("/drawer-import <path>", "import links and snippets"),
     ("/trust <domain>", "allow image previews from a domain"),
     ("/untrust <domain>", "stop image previews from a domain"),
     ("/log <path>", "save this chat's transcript"),
@@ -63,6 +87,9 @@ pub const HELP: &[(&str, &str)] = &[
     ("/links", "pick a link from the chat"),
     ("/logs", "browse earlier chats"),
     ("/drawer", "toggle the drawer"),
+    ("/new", "open another chat alongside this one"),
+    ("/close", "close this chat"),
+    ("/chat <n>", "switch to chat n"),
     ("/clear", "clear the chat view"),
     ("/reconnect", "reconnect to the server"),
     ("/quit", "exit"),
@@ -86,7 +113,18 @@ pub fn parse(input: &str) -> Parsed {
         None => Parsed::Error(format!("/{name} needs {what}")),
     };
     match name.to_ascii_lowercase().as_str() {
-        "find" | "next" | "new" => Parsed::Command(Command::Find),
+        "find" => Parsed::Command(Command::Find),
+        "next" | "skip" => Parsed::Command(Command::Next),
+        "snip" | "snippet" => Parsed::Command(Command::Snip(opt())),
+        "snip-add" | "snippet-add" => match arg.split_once(char::is_whitespace) {
+            Some((name, text)) if !text.trim().is_empty() => {
+                Parsed::Command(Command::SnipAdd { name: name.into(), text: text.trim().into() })
+            }
+            _ => Parsed::Error("/snip-add needs a name and some text".into()),
+        },
+        "edit" | "editor" => Parsed::Command(Command::Edit),
+        "drawer-export" => need("a file path", Command::DrawerExport),
+        "drawer-import" => need("a file path", Command::DrawerImport),
         "leave" | "disconnect" | "dc" => Parsed::Command(Command::Leave),
         "block" => Parsed::Command(Command::Block),
         "reconnect" => Parsed::Command(Command::Reconnect),
@@ -111,6 +149,12 @@ pub fn parse(input: &str) -> Parsed {
         "untrust" => need("a domain", Command::Untrust),
         "raw" => need("a frame to send", Command::Raw),
         "log" => need("a file path", Command::SaveLog),
+        "new" | "newchat" => Parsed::Command(Command::NewChat),
+        "close" => Parsed::Command(Command::CloseChat),
+        "chat" | "tab" => match arg.parse::<usize>() {
+            Ok(n) if n >= 1 => Parsed::Command(Command::SwitchChat(n)),
+            _ => Parsed::Error("/chat needs a chat number, like /chat 2".into()),
+        },
         "" => Parsed::Error("type a command after /, or // to send a literal /".into()),
         other => Parsed::Error(format!("unknown command /{other} — try /help")),
     }
@@ -136,7 +180,17 @@ mod tests {
     #[test]
     fn parses_simple_commands_and_aliases() {
         assert_eq!(cmd("/find"), Command::Find);
-        assert_eq!(cmd("/NEXT"), Command::Find);
+        assert_eq!(cmd("/NEXT"), Command::Next);
+        assert_eq!(cmd("/new"), Command::NewChat);
+        assert_eq!(cmd("/chat 2"), Command::SwitchChat(2));
+        assert!(matches!(parse("/chat zero"), Parsed::Error(_)));
+        assert_eq!(cmd("/snip"), Command::Snip(None));
+        assert_eq!(cmd("/snip intro"), Command::Snip(Some("intro".into())));
+        assert_eq!(
+            cmd("/snip-add intro Hi there, {partner_species}!"),
+            Command::SnipAdd { name: "intro".into(), text: "Hi there, {partner_species}!".into() }
+        );
+        assert!(matches!(parse("/snip-add intro"), Parsed::Error(_)));
         assert_eq!(cmd("/dc"), Command::Leave);
         assert_eq!(cmd("/profile"), Command::Profile(None));
         assert_eq!(cmd("/profile  my fox "), Command::Profile(Some("my fox".into())));

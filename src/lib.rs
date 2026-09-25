@@ -8,6 +8,7 @@ pub mod config;
 pub mod drawer;
 pub mod images;
 pub mod input;
+pub mod keymap;
 pub mod links;
 pub mod logs;
 pub mod net;

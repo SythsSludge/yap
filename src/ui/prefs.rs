@@ -1,15 +1,17 @@
 //! The preferences tab: profiles | fields | options.
 
-use super::{columns, list, section};
+use super::{Rows, columns, render_list, section};
+use crate::app::ListId;
 use crate::app::{App, PrefsPane};
 use crate::catalog::ANY;
+use crate::keymap::Action;
 use crate::prefs::Field;
 use crate::text::truncate;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{ListItem, Paragraph, Wrap};
 
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let cols = columns(frame, app, area, &[Constraint::Length(22), Constraint::Percentage(42), Constraint::Min(24)]);
@@ -38,8 +40,7 @@ fn draw_profiles(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     let selected = app.prefs_ui.profile.min(app.config.profiles.len() - 1);
-    let mut state = ListState::default().with_selected(Some(selected));
-    frame.render_stateful_widget(list(app, items, focused), inner, &mut state);
+    render_list(frame, app, inner, items, Rows::new(ListId::PrefsProfiles, Some(selected), focused));
 }
 
 fn draw_fields(frame: &mut Frame, app: &App, area: Rect) {
@@ -66,14 +67,13 @@ fn draw_fields(frame: &mut Frame, app: &App, area: Rect) {
             ]))
         })
         .collect();
-    let mut state = ListState::default().with_selected(Some(app.prefs_ui.field));
-    frame.render_stateful_widget(list(app, items, focused), list_area, &mut state);
+    render_list(frame, app, list_area, items, Rows::new(ListId::PrefsFields, Some(app.prefs_ui.field), focused));
 
     let status = match prefs.validate() {
         Ok(()) => vec![Line::from(vec![
             Span::styled("● ", Style::new().fg(t.success)),
             Span::styled("ready · ", t.muted()),
-            Span::styled("^F", Style::new().fg(t.fg)),
+            Span::styled(app.keymap.label(Action::Find), Style::new().fg(t.fg)),
             Span::styled(" finds a partner", t.muted()),
         ])],
         Err(e) => vec![Line::from(vec![
@@ -129,6 +129,5 @@ fn draw_options(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     let selected = focused.then(|| app.prefs_ui.option.min(options.len() - 1));
-    let mut state = ListState::default().with_selected(selected);
-    frame.render_stateful_widget(list(app, items, focused), list_area, &mut state);
+    render_list(frame, app, list_area, items, Rows::new(ListId::PrefsOptions, selected, focused));
 }

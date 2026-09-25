@@ -72,6 +72,11 @@ fn messages_layout() {
 fn logs_screen() {
     let mut h = chatting();
     h.server(ServerMessage::PartnerLeft);
+    // The list and title show when the chat happened; pin it so the snapshot is stable.
+    for conv in &mut h.logs.items {
+        conv.started = fixed_time();
+        conv.ended = Some(fixed_time() + chrono::Duration::minutes(12));
+    }
     h.press(KeyCode::F(5));
     h.press(KeyCode::Enter);
     insta::assert_snapshot!(render(&mut h, 110, 22));
@@ -237,6 +242,24 @@ fn every_screen_survives_tiny_terminals() {
             }
         }
     }
+}
+
+#[test]
+fn keys_section_and_capture_popup() {
+    let mut h = app();
+    h.keymap.bind(crate::keymap::Action::Find, crate::keymap::Chord::parse("alt+f").unwrap());
+    h.press(KeyCode::F(7));
+    let rows = crate::app::settings::rows(&h.config.settings);
+    h.settings_ui.selected =
+        rows.iter().position(|r| *r == crate::app::settings::Row::Key(crate::keymap::Action::Find)).unwrap();
+    let screen = render(&mut h, 100, 30);
+    assert!(screen.contains("Find a partner"), "{screen}");
+    assert!(screen.contains("alt+f"));
+    assert!(screen.contains("backspace default"));
+    h.press(KeyCode::Enter);
+    let screen = render(&mut h, 100, 30);
+    assert!(screen.contains("Press the new key for find a partner"), "{screen}");
+    assert!(screen.contains("currently alt+f"));
 }
 
 #[test]

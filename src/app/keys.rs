@@ -2,10 +2,11 @@
 
 use super::modal::{Confirm, Modal, PromptAction};
 use super::settings::{self, Row};
-use super::{App, ChatFocus, Level, ListUi, PrefsPane, Tab};
+use super::{App, ChatFocus, Level, ListUi, PrefsPane, Shelf, Tab};
 use crate::catalog::ANY;
 use crate::drawer::{parse_link, suggest_label};
 use crate::input::LineEditor;
+use crate::keymap::{Action, Chord};
 use crate::prefs::{Field, Preferences};
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
 
@@ -116,6 +117,9 @@ impl App {
         let delta: isize = match mouse.kind {
             MouseEventKind::ScrollUp => -3,
             MouseEventKind::ScrollDown => 3,
+            MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left) => {
+                return self.on_click(mouse.column, mouse.row);
+            }
             _ => return,
         };
         if self.modal.is_some() || self.viewer.is_some() {
@@ -183,39 +187,55 @@ impl App {
         }
     }
 
+    /// Rebindable global shortcuts (see `keymap.rs`).
     fn global_key(&mut self, key: KeyEvent) -> bool {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let alt = key.modifiers.contains(KeyModifiers::ALT);
-        let tab = match key.code {
-            KeyCode::F(n @ 2..=7) => Some(Tab::ALL[n as usize - 2]),
-            KeyCode::Char(c @ '1'..='6') if alt => Some(Tab::ALL[c as usize - '1' as usize]),
-            _ => None,
-        };
-        if let Some(tab) = tab {
-            self.tab = tab;
-            return true;
+        let Some(action) = self.keymap.action(&key) else { return false };
+        if action.chat_only() && self.tab != Tab::Chat {
+            return false;
         }
-        match key.code {
-            KeyCode::F(1) => self.modal = Some(Modal::Help { scroll: 0 }),
-            KeyCode::Char('f') if ctrl => self.request_find(),
-            KeyCode::Char('d') if ctrl => self.request_leave(),
-            KeyCode::Char('b') if ctrl => self.request_block(),
-            KeyCode::Char('r') if ctrl => {
-                self.traffic_note("manual reconnect");
-                self.run_command(crate::commands::Command::Reconnect);
-            }
-            KeyCode::Char('p') if ctrl => self.open_profile_picker(),
-            KeyCode::Char('t') if ctrl => self.open_theme_picker(),
-            KeyCode::Char('o') if ctrl => self.open_links(),
-            KeyCode::Char('e') if ctrl => self.toggle_drawer_panel(),
-            KeyCode::Char('s') if ctrl => {
+        self.run_action(action);
+        true
+    }
+
+    pub fn run_action(&mut self, action: Action) {
+        let page = self.chat.page();
+        match action {
+            Action::Help => self.modal = Some(Modal::Help { scroll: 0 }),
+            Action::Find => self.request_find(),
+            Action::Next => self.next_partner(),
+            Action::Snippets => self.open_snippet_picker(),
+            Action::Editor => self.compose_in_editor(),
+            Action::Leave => self.request_leave(),
+            Action::Block => self.request_block(),
+            Action::Links => self.open_links(),
+            Action::Drawer => self.toggle_drawer_panel(),
+            Action::Profile => self.open_profile_picker(),
+            Action::Theme => self.open_theme_picker(),
+            Action::Sidebar => {
                 self.config.settings.show_sidebar ^= true;
                 self.config_changed();
             }
-            KeyCode::Char('q') if ctrl => self.request_quit(),
-            _ => return false,
+            Action::Reconnect => {
+                self.traffic_note("manual reconnect");
+                self.run_command(crate::commands::Command::Reconnect);
+            }
+            Action::Quit => self.request_quit(),
+            Action::NewChat => self.new_session(),
+            Action::CloseChat => self.request_close_session(),
+            Action::NextChat => self.cycle_session(1),
+            Action::PrevChat => self.cycle_session(-1),
+            Action::TabChat => self.tab = Tab::Chat,
+            Action::TabPreferences => self.tab = Tab::Preferences,
+            Action::TabDrawer => self.tab = Tab::Drawer,
+            Action::TabLogs => self.tab = Tab::Logs,
+            Action::TabTraffic => self.tab = Tab::Traffic,
+            Action::TabSettings => self.tab = Tab::Settings,
+            Action::ScrollPageUp => self.chat.scroll_up(page),
+            Action::ScrollPageDown => self.chat.scroll_down(page),
+            Action::ScrollUp => self.chat.scroll_up(1),
+            Action::ScrollDown => self.chat.scroll_down(1),
+            Action::JumpToNewest => self.chat.follow(),
         }
-        true
     }
 
     // ----- chat -----------------------------------------------------------------
@@ -224,15 +244,11 @@ impl App {
         if self.chat_focus == ChatFocus::Drawer && self.drawer_panel {
             return self.chat_drawer_key(key);
         }
-        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // Scrolling is handled by the (rebindable) global keys; Esc always jumps down.
+        let modified = key.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT);
         match key.code {
             KeyCode::Enter => return self.submit_input(),
-            KeyCode::PageUp => return self.chat.scroll_up(self.chat.page()),
-            KeyCode::PageDown => return self.chat.scroll_down(self.chat.page()),
-            KeyCode::Up if shift || ctrl => return self.chat.scroll_up(1),
-            KeyCode::Down if shift || ctrl => return self.chat.scroll_down(1),
-            KeyCode::End if ctrl => return self.chat.follow(),
+            KeyCode::Up | KeyCode::Down if modified => return,
             KeyCode::Up => {
                 self.input.history_prev();
                 return;
@@ -241,7 +257,12 @@ impl App {
                 self.input.history_next();
                 return;
             }
-            KeyCode::Esc => return self.chat.follow(),
+            KeyCode::Esc => {
+                if !self.cancel_requeue() {
+                    self.chat.follow();
+                }
+                return;
+            }
             KeyCode::Tab if self.drawer_panel => {
                 self.chat_focus = ChatFocus::Drawer;
                 return;
@@ -438,6 +459,33 @@ impl App {
     }
 
     fn drawer_key(&mut self, key: KeyEvent) {
+        let filtering = self.drawer_ui.list.filtering || self.drawer_ui.snippets.filtering;
+        if !filtering {
+            match key.code {
+                KeyCode::Char('s') => {
+                    self.drawer_ui.shelf = match self.drawer_ui.shelf {
+                        Shelf::Links => Shelf::Snippets,
+                        Shelf::Snippets => Shelf::Links,
+                    };
+                    return;
+                }
+                KeyCode::Char('E') => {
+                    let path = self.default_path("yap-drawer.toml");
+                    return self.open_prompt(
+                        "Export links and snippets to (.toml or .json)",
+                        &path,
+                        PromptAction::DrawerExport,
+                    );
+                }
+                KeyCode::Char('I') => {
+                    return self.open_prompt("Import links and snippets from", "", PromptAction::DrawerImport);
+                }
+                _ => {}
+            }
+        }
+        if self.drawer_ui.shelf == Shelf::Snippets {
+            return self.snippets_key(key);
+        }
         if self.drawer_ui.list.filtering {
             if edit_filter(&mut self.drawer_ui.list, &key) {
                 self.drawer_ui.list.filtering = false;
@@ -494,12 +542,59 @@ impl App {
         }
     }
 
+    pub fn visible_snippets(&self) -> Vec<usize> {
+        self.drawer.filtered_snippets(&self.drawer_ui.snippets.filter)
+    }
+
+    fn snippets_key(&mut self, key: KeyEvent) {
+        if self.drawer_ui.snippets.filtering {
+            if edit_filter(&mut self.drawer_ui.snippets, &key) {
+                self.drawer_ui.snippets.filtering = false;
+            }
+            return;
+        }
+        let visible = self.visible_snippets();
+        if navigate(&mut self.drawer_ui.snippets.selected, visible.len(), &key, 10) {
+            return;
+        }
+        match key.code {
+            KeyCode::Char('a') => {
+                return self.open_prompt("Snippet name (used as /snip <name>)", "", PromptAction::SnippetName);
+            }
+            KeyCode::Char('/') => {
+                self.drawer_ui.snippets.filtering = true;
+                return;
+            }
+            KeyCode::Esc => return self.drawer_ui.snippets.filter.clear(),
+            _ => {}
+        }
+        let Some(&index) = visible.get(self.drawer_ui.snippets.selected) else { return };
+        let snippet = self.drawer.snippets[index].clone();
+        match key.code {
+            KeyCode::Enter | KeyCode::Char('i') => self.insert_snippet(index),
+            KeyCode::Char('e') => self.edit_snippet_in_editor(index),
+            KeyCode::Char('r') => self.open_prompt("Rename snippet", &snippet.name, PromptAction::SnippetRename(index)),
+            KeyCode::Char('y') => self.copy(&snippet.text),
+            KeyCode::Char('d') | KeyCode::Delete => {
+                self.modal = Some(Modal::Confirm {
+                    text: format!("Delete the snippet `{}`?", snippet.name),
+                    action: Confirm::DeleteSnippet(index),
+                });
+            }
+            _ => {}
+        }
+    }
+
     // ----- logs -----------------------------------------------------------------
 
     fn logs_key(&mut self, key: KeyEvent) {
         if self.logs_ui.list.filtering {
             if edit_filter(&mut self.logs_ui.list, &key) {
                 self.logs_ui.list.filtering = false;
+            }
+            // Searching looks inside messages, so older chats need loading.
+            if self.logs_ui.list.filter.chars().count() >= 2 {
+                self.logs.load_all();
             }
             return;
         }
@@ -542,6 +637,16 @@ impl App {
                 let started = self.logs.items[index].started.format("%Y%m%d-%H%M%S");
                 let path = self.default_path(&format!("yap-chat-{started}.txt"));
                 self.open_prompt("Save transcript to", &path, PromptAction::ExportLog(index));
+            }
+            KeyCode::Char('p') => {
+                let pinned = self.logs.toggle_pin(index);
+                self.toast(Level::Info, if pinned { "Pinned." } else { "Unpinned." });
+                // Keep the same chat selected as it moves.
+                self.logs_ui.list.selected = self.visible_logs().iter().position(|&i| i == index).unwrap_or(0);
+            }
+            KeyCode::Char('r') => {
+                let name = self.logs.items[index].name.clone().unwrap_or_default();
+                self.open_prompt("Name this chat (empty clears)", &name, PromptAction::LogRename(index));
             }
             KeyCode::Char('d') | KeyCode::Delete => {
                 let title = self.logs.items[index].title();
@@ -640,11 +745,23 @@ impl App {
             KeyCode::Enter | KeyCode::Char(' ') => self.activate_setting(row),
             KeyCode::Left | KeyCode::Char('h') => self.adjust_setting(row, -1),
             KeyCode::Right | KeyCode::Char('l') => self.adjust_setting(row, 1),
-            KeyCode::Char('d') | KeyCode::Delete => {
+            KeyCode::Char('d') | KeyCode::Delete if matches!(row, Row::Domain(_)) => {
                 if let Row::Domain(i) = row {
                     self.remove_domain(i);
                     let len = settings::rows(&self.config.settings).len();
                     self.settings_ui.selected = self.settings_ui.selected.min(len - 1);
+                }
+            }
+            KeyCode::Backspace | KeyCode::Delete if matches!(row, Row::Key(_)) => {
+                if let Row::Key(action) = row {
+                    self.keymap.reset(action);
+                    self.keymap_changed();
+                }
+            }
+            KeyCode::Char('x') if matches!(row, Row::Key(_)) => {
+                if let Row::Key(action) = row {
+                    self.keymap.unbind(action);
+                    self.keymap_changed();
                 }
             }
             _ => {}
@@ -663,6 +780,7 @@ impl App {
                 let label = suggest_label(&url);
                 self.open_prompt("Label", &label, PromptAction::DrawerAddLabel { url });
             }
+            KeyCode::Char('d') => self.save_image(&url),
             _ => self.viewer = None,
         }
     }
@@ -678,9 +796,40 @@ impl App {
                 KeyCode::Char('n' | 'N') | KeyCode::Esc => None,
                 _ => Some(Modal::Confirm { text, action }),
             },
+            Modal::CaptureKey { action } => match key.code {
+                KeyCode::Esc => None,
+                // Bare modifier presses (kitty's enhanced keyboard mode) aren't keys yet.
+                KeyCode::Modifier(_) => Some(Modal::CaptureKey { action }),
+                _ => {
+                    let chord = Chord::from_event(&key);
+                    match chord.reserved() {
+                        Some(why) => {
+                            self.toast(
+                                Level::Warning,
+                                format!("Can't use {chord}: {why}. Try a ctrl, alt or F-key combination."),
+                            );
+                            Some(Modal::CaptureKey { action })
+                        }
+                        None => {
+                            let taken = self.keymap.bind(action, chord);
+                            self.keymap_changed();
+                            let mut msg = format!("{}: {chord}", action.describe());
+                            if let Some(prev) = taken {
+                                msg.push_str(&format!(" (taken from {})", prev.describe().to_lowercase()));
+                            }
+                            self.toast(Level::Success, msg);
+                            None
+                        }
+                    }
+                }
+            },
             Modal::Prompt(mut prompt) => match key.code {
                 KeyCode::Enter => {
-                    let text = prompt.editor.text().trim().to_owned();
+                    // Most prompts want trimmed text; the paragraph break keeps its spaces.
+                    let text = match prompt.action {
+                        PromptAction::ParagraphBreak => prompt.editor.text().to_owned(),
+                        _ => prompt.editor.text().trim().to_owned(),
+                    };
                     self.submit_prompt(prompt.action, text);
                     return;
                 }
@@ -734,6 +883,35 @@ impl App {
                         self.switch_profile(&name);
                     }
                     None
+                }
+            }
+            Modal::Snippets { mut filter, mut selected } => {
+                let visible = self.drawer.filtered_snippets(&filter);
+                match key.code {
+                    KeyCode::Esc => None,
+                    KeyCode::Enter => {
+                        if let Some(&i) = visible.get(selected) {
+                            self.insert_snippet(i);
+                        }
+                        None
+                    }
+                    KeyCode::Up => {
+                        step(&mut selected, visible.len(), -1);
+                        Some(Modal::Snippets { filter, selected })
+                    }
+                    KeyCode::Down | KeyCode::Tab => {
+                        step(&mut selected, visible.len(), 1);
+                        Some(Modal::Snippets { filter, selected })
+                    }
+                    KeyCode::Backspace => {
+                        filter.pop();
+                        Some(Modal::Snippets { filter, selected: 0 })
+                    }
+                    KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        filter.push(c);
+                        Some(Modal::Snippets { filter, selected: 0 })
+                    }
+                    _ => Some(Modal::Snippets { filter, selected }),
                 }
             }
             Modal::Themes { mut selected, original } => {
@@ -816,6 +994,63 @@ impl App {
                 }
             }
             PromptAction::ExportLog(i) => self.export_log(i, &text),
+            PromptAction::SnippetName => match crate::drawer::normalize_snippet_name(&text) {
+                Some(name) if self.drawer.snippet(&name).is_some() => {
+                    self.toast(Level::Error, format!("There's already a snippet called `{name}`."));
+                }
+                Some(name) => {
+                    let title = format!("Text for `{name}` (empty opens your editor)");
+                    self.open_prompt(&title, "", PromptAction::SnippetText { name });
+                }
+                None => self.toast(Level::Error, format!("`{text}` can't be a snippet name.")),
+            },
+            PromptAction::SnippetText { name } => {
+                if let Some(i) = self.add_snippet(&name, &text) {
+                    self.drawer_ui.shelf = Shelf::Snippets;
+                    self.drawer_ui.snippets.selected = i;
+                    if text.is_empty() {
+                        self.edit_snippet_in_editor(i);
+                    }
+                }
+            }
+            PromptAction::SnippetRename(i) => match self.drawer.rename_snippet(i, &text) {
+                Ok(()) => self.drawer_changed(),
+                Err(e) => self.toast(Level::Error, e.to_string()),
+            },
+            PromptAction::DrawerExport => self.export_drawer(&text),
+            PromptAction::DrawerImport => self.import_drawer(&text),
+            PromptAction::LogRename(i) => self.logs.rename(i, &text),
+            PromptAction::EditorCommand => {
+                self.config.settings.editor = text;
+                self.config_changed();
+            }
+            PromptAction::ParagraphBreak => {
+                self.config.settings.paragraph_break = text;
+                self.config_changed();
+            }
+            PromptAction::RequeueDelay => match text.parse::<u64>() {
+                Ok(n @ 0..=120) => {
+                    self.config.settings.requeue_delay_secs = n;
+                    self.config_changed();
+                }
+                _ => self.toast(Level::Error, "Use a number of seconds from 0 to 120."),
+            },
+            PromptAction::MinSharedKinks => match text.parse::<u8>() {
+                Ok(n @ 0..=20) => {
+                    self.config.settings.skip.min_shared_kinks = n;
+                    self.config_changed();
+                }
+                _ => self.toast(Level::Error, "Use a number from 0 to 20."),
+            },
+            PromptAction::Keywords => {
+                self.config.settings.notify.keywords =
+                    text.split(',').map(str::trim).filter(|k| !k.is_empty()).map(str::to_owned).collect();
+                self.config_changed();
+            }
+            PromptAction::SoundCommand => {
+                self.config.settings.notify.sound_command = text;
+                self.config_changed();
+            }
             PromptAction::AddTrustedDomain => self.trust_domain(&text),
             PromptAction::ServerUrl => match crate::net::websocket_url(&text) {
                 Ok(url) => {

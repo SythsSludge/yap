@@ -2,6 +2,7 @@
 
 use super::chat::ChatLink;
 use crate::input::LineEditor;
+use crate::keymap::Action;
 
 /// Actions that need a yes/no first.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,6 +14,8 @@ pub enum Confirm {
     DeleteProfile(String),
     DeleteDrawerItem(usize),
     DeleteLog(usize),
+    DeleteSnippet(usize),
+    CloseSession,
     LoadUntrusted(String),
 }
 
@@ -30,6 +33,18 @@ pub enum PromptAction {
     DrawerEditLabel(usize),
     DrawerEditNote(usize),
     DrawerEditTags(usize),
+    SnippetName,
+    SnippetText { name: String },
+    SnippetRename(usize),
+    DrawerExport,
+    DrawerImport,
+    LogRename(usize),
+    EditorCommand,
+    ParagraphBreak,
+    RequeueDelay,
+    MinSharedKinks,
+    Keywords,
+    SoundCommand,
     ExportLog(usize),
     AddTrustedDomain,
     ServerUrl,
@@ -51,6 +66,10 @@ pub enum Modal {
         action: Confirm,
     },
     Prompt(Prompt),
+    /// Waiting for the user to press a new key for `action`.
+    CaptureKey {
+        action: Action,
+    },
     Help {
         scroll: u16,
     },
@@ -59,6 +78,11 @@ pub enum Modal {
         selected: usize,
     },
     Profiles {
+        selected: usize,
+    },
+    /// Pick a snippet to insert; typing filters.
+    Snippets {
+        filter: String,
         selected: usize,
     },
     /// `original` is restored if the picker is cancelled after live-previewing.

@@ -116,6 +116,8 @@ pub fn decode(bytes: &[u8]) -> Result<DynamicImage, String> {
 pub struct Loaded {
     pub inline: SlicedProtocol,
     pub image: DynamicImage,
+    /// The file as downloaded, for saving it unchanged.
+    pub bytes: Vec<u8>,
 }
 
 impl Loaded {
@@ -124,17 +126,61 @@ impl Loaded {
     }
 }
 
-pub fn prepare(picker: &Picker, image: DynamicImage, max: Size) -> Result<Loaded, String> {
+pub fn prepare(picker: &Picker, image: DynamicImage, bytes: Vec<u8>, max: Size) -> Result<Loaded, String> {
     let inline =
         SlicedProtocol::new_with_resize(picker, image.clone(), max, Resize::Fit(None)).map_err(|e| e.to_string())?;
-    Ok(Loaded { inline, image })
+    Ok(Loaded { inline, image, bytes })
+}
+
+/// A safe file name for a downloaded image: the URL's last path segment, stripped to
+/// harmless characters, with an extension matching the actual format.
+pub fn file_name_for(url: &str, bytes: &[u8]) -> String {
+    let ext = match image::guess_format(bytes) {
+        Ok(image::ImageFormat::Png) => "png",
+        Ok(image::ImageFormat::Jpeg) => "jpg",
+        Ok(image::ImageFormat::Gif) => "gif",
+        Ok(image::ImageFormat::WebP) => "webp",
+        _ => "img",
+    };
+    let segment = Url::parse(url)
+        .ok()
+        .and_then(|u| u.path_segments().and_then(|mut s| s.rfind(|seg| !seg.is_empty()).map(str::to_owned)))
+        .unwrap_or_default();
+    // Path segments arrive percent-encoded; decode before filtering.
+    let segment = url::form_urlencoded::parse(format!("x={segment}").as_bytes())
+        .next()
+        .map(|(_, v)| v.into_owned())
+        .unwrap_or(segment);
+    let stem = segment.rsplit_once('.').map_or(segment.as_str(), |(stem, _)| stem);
+    let stem: String = stem.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')).take(80).collect();
+    let stem = if stem.is_empty() { "image".to_owned() } else { stem };
+    format!("{stem}.{ext}")
+}
+
+/// Write `bytes` into `dir` without overwriting anything. Returns the path used.
+pub fn save_original(bytes: &[u8], url: &str, dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let name = file_name_for(url, bytes);
+    let (stem, ext) = name.rsplit_once('.').unwrap_or((&name, "img"));
+    for n in 0..1000 {
+        let candidate = if n == 0 { dir.join(&name) } else { dir.join(format!("{stem}-{n}.{ext}")) };
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&candidate) {
+            Ok(mut f) => {
+                std::io::Write::write_all(&mut f, bytes).map_err(|e| e.to_string())?;
+                return Ok(candidate);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err("too many files with that name".into())
 }
 
 /// Everything from URL to displayable preview, on a blocking thread.
 pub async fn load(url: Url, policy: FetchPolicy, picker: Picker, max: Size) -> Result<Loaded, String> {
     tokio::task::spawn_blocking(move || {
         let bytes = fetch(&url, &policy)?;
-        prepare(&picker, decode(&bytes)?, max)
+        prepare(&picker, decode(&bytes)?, bytes, max)
     })
     .await
     .map_err(|e| format!("image worker failed: {e}"))?
@@ -245,9 +291,28 @@ mod tests {
     }
 
     #[test]
+    fn saved_images_get_safe_unique_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = png(2, 2);
+        assert_eq!(
+            file_name_for("https://i.imgur.com/AbC.jpeg?x=1", &bytes),
+            "AbC.png",
+            "extension follows the content"
+        );
+        assert_eq!(file_name_for("https://x.y/../../etc/pa ss wd", &bytes), "passwd.png");
+        assert_eq!(file_name_for("https://x.y/", &bytes), "image.png");
+        let first = save_original(&bytes, "https://x.y/a.png", dir.path()).unwrap();
+        let second = save_original(&bytes, "https://x.y/a.png", dir.path()).unwrap();
+        assert_eq!(first.file_name().unwrap(), "a.png");
+        assert_eq!(second.file_name().unwrap(), "a-1.png");
+        assert_eq!(std::fs::read(second).unwrap(), bytes);
+    }
+
+    #[test]
     fn prepares_inline_preview_within_bounds() {
         let picker = Picker::halfblocks();
-        let loaded = prepare(&picker, decode(&png(400, 100)).unwrap(), Size::new(20, 10)).unwrap();
+        let bytes = png(400, 100);
+        let loaded = prepare(&picker, decode(&bytes).unwrap(), bytes, Size::new(20, 10)).unwrap();
         let size = loaded.inline.size();
         assert!(size.width <= 20 && size.height <= 10, "{size:?}");
         assert!(loaded.rows() >= 1);

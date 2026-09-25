@@ -15,10 +15,12 @@ pub enum Field {
     PartnerRole,
     Kinks,
     Language,
+    /// Kinks you never want; partners listing one are auto-skipped. Never sent.
+    Limits,
 }
 
 impl Field {
-    pub const ALL: [Field; 8] = [
+    pub const ALL: [Field; 9] = [
         Field::Gender,
         Field::Species,
         Field::Role,
@@ -27,6 +29,7 @@ impl Field {
         Field::PartnerRole,
         Field::Kinks,
         Field::Language,
+        Field::Limits,
     ];
 
     pub fn label(self) -> &'static str {
@@ -39,6 +42,7 @@ impl Field {
             Field::PartnerRole => "Partner's role",
             Field::Kinks => "Kinks",
             Field::Language => "Language",
+            Field::Limits => "Limits (auto-skip)",
         }
     }
 
@@ -47,18 +51,18 @@ impl Field {
             Field::Gender | Field::PartnerGender => Catalog::Gender,
             Field::Species | Field::PartnerSpecies => Catalog::Species,
             Field::Role | Field::PartnerRole => Catalog::Role,
-            Field::Kinks => Catalog::Kinks,
+            Field::Kinks | Field::Limits => Catalog::Kinks,
             Field::Language => Catalog::Language,
         }
     }
 
     pub fn is_multi(self) -> bool {
-        matches!(self, Field::PartnerGender | Field::PartnerSpecies | Field::Kinks)
+        matches!(self, Field::PartnerGender | Field::PartnerSpecies | Field::Kinks | Field::Limits)
     }
 
     /// Whether "Any / All" is offered for this field.
     pub fn allows_any(self) -> bool {
-        self.is_multi() || self == Field::Language
+        matches!(self, Field::PartnerGender | Field::PartnerSpecies | Field::Kinks | Field::Language)
     }
 }
 
@@ -75,6 +79,8 @@ pub struct Preferences {
     pub partner_role: Option<String>,
     pub kinks: Vec<String>,
     pub language: String,
+    /// See [`Field::Limits`]. May be empty.
+    pub limits: Vec<String>,
 }
 
 impl Default for Preferences {
@@ -89,6 +95,7 @@ impl Default for Preferences {
             partner_role: None,
             kinks: vec![ANY.into()],
             language: ANY.into(),
+            limits: Vec::new(),
         }
     }
 }
@@ -146,6 +153,7 @@ impl Preferences {
             Field::PartnerGender => multi(&self.partner_gender),
             Field::PartnerSpecies => multi(&self.partner_species),
             Field::Kinks => multi(&self.kinks),
+            Field::Limits => multi(&self.limits),
             Field::Language => vec![self.language.as_str()],
         }
     }
@@ -172,6 +180,12 @@ impl Preferences {
             Field::PartnerGender => toggle_multi(&mut self.partner_gender, value),
             Field::PartnerSpecies => toggle_multi(&mut self.partner_species, value),
             Field::Kinks => toggle_multi(&mut self.kinks, value),
+            Field::Limits => match self.limits.iter().position(|x| x == value) {
+                Some(pos) => {
+                    self.limits.remove(pos);
+                }
+                None => self.limits.push(value.into()),
+            },
         }
     }
 
@@ -186,6 +200,7 @@ impl Preferences {
             Field::PartnerGender => self.partner_gender = vec![ANY.into()],
             Field::PartnerSpecies => self.partner_species = vec![ANY.into()],
             Field::Kinks => self.kinks = vec![ANY.into()],
+            Field::Limits => self.limits.clear(),
         }
     }
 
@@ -275,6 +290,14 @@ impl Preferences {
                 *list = vec![ANY.into()];
             }
         }
+        let mut seen = std::collections::HashSet::new();
+        self.limits.retain(|x| {
+            let ok = Catalog::Kinks.contains(x) && seen.insert(x.clone());
+            if !ok {
+                dropped.push(x.clone());
+            }
+            ok
+        });
         dropped
     }
 
@@ -300,6 +323,7 @@ impl Preferences {
             partner_role: str_of("partnerRole").map(Into::into),
             kinks: list_of("kinks"),
             language: str_of("language").unwrap_or(ANY).into(),
+            limits: Vec::new(),
         };
         prefs.sanitize();
         Some(prefs)
@@ -309,6 +333,7 @@ impl Preferences {
     pub fn summary(&self, field: Field) -> String {
         let values = self.values(field);
         match values.as_slice() {
+            [] if field == Field::Limits => "none".into(),
             [] => "—".into(),
             [v] if *v == ANY => "Any / All".into(),
             [v] => (*v).into(),
@@ -461,6 +486,21 @@ mod tests {
 
         assert_eq!(Preferences::from_web_local_storage(&json!({"theme": "dark"})), None);
         assert_eq!(Preferences::from_web_local_storage(&json!([1, 2])), None);
+    }
+
+    #[test]
+    fn limits_are_a_plain_list_never_sent() {
+        let mut p = complete();
+        assert_eq!(p.summary(Field::Limits), "none");
+        p.toggle(Field::Limits, "Scat");
+        p.toggle(Field::Limits, ANY);
+        p.toggle(Field::Limits, "Not A Kink");
+        assert_eq!(p.limits, vec!["Scat"]);
+        let json = serde_json::to_string(&p.to_wire(true).unwrap()).unwrap();
+        assert!(!json.contains("Scat"), "limits stay local: {json}");
+        p.toggle(Field::Limits, "Scat");
+        assert!(p.limits.is_empty(), "no Any fallback for limits");
+        assert!(p.validate().is_ok());
     }
 
     #[test]

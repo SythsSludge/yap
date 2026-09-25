@@ -1,14 +1,15 @@
 //! The settings tab.
 
-use super::{list, section};
+use super::{Rows, render_list, section};
 use crate::app::App;
+use crate::app::ListId;
 use crate::app::settings::{Row, rows};
 use crate::text::{truncate, width};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{ListItem, Paragraph, Wrap};
 
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
@@ -19,6 +20,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let inner_w = inner.width.saturating_sub(2).min(96) as usize;
 
     let mut items = Vec::new();
+    // Which settings row each list item is (headers and spacers aren't clickable).
+    let mut targets: Vec<Option<usize>> = Vec::new();
     let mut selected_item = 0;
     let mut section_name = "";
     for (i, row) in rows.iter().enumerate() {
@@ -29,15 +32,16 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 section_name.to_lowercase(),
                 t.muted().add_modifier(Modifier::BOLD),
             ))));
+            targets.extend([None, None]);
         }
         if i == app.settings_ui.selected {
             selected_item = items.len();
         }
         let label = format!("  {}", row.label(s));
-        let value = row.value(s);
+        let value = row.key_value(&app.keymap).unwrap_or_else(|| row.value(s));
         let value_style = match value.as_str() {
             "on" => Style::new().fg(t.success),
-            "off" => t.muted(),
+            "off" | "unbound" => t.muted(),
             _ => Style::new().fg(t.fg),
         };
         let value = truncate(&value, inner_w.saturating_sub(width(&label) + 2));
@@ -47,9 +51,9 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" ".repeat(pad)),
             Span::styled(value, value_style),
         ])));
+        targets.push(Some(i));
     }
-    let mut state = ListState::default().with_selected(Some(selected_item));
-    frame.render_stateful_widget(list(app, items, true), inner, &mut state);
+    render_list(frame, app, inner, items, Rows::new(ListId::Settings, Some(selected_item), true).targets(&targets));
 
     let help = rows.get(app.settings_ui.selected).map(|r: &Row| r.help()).unwrap_or_default();
     let config = format!("saved to {}", app.paths.config_file.display());

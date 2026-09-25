@@ -1,5 +1,6 @@
 use super::modal::{Confirm, Modal};
 use super::*;
+use super::{EditorPurpose, Hit, ListId, Shelf, ViewerButton};
 use crate::config::Paths;
 use crate::prefs::Preferences;
 use crate::protocol::WirePreferences;
@@ -396,7 +397,8 @@ fn images_arriving_fill_the_viewer() {
     h.preview("https://i.imgur.com/a.png");
     assert!(h.viewer.as_ref().unwrap().protocol.is_none());
     let img = image::DynamicImage::new_rgba8(8, 8);
-    let loaded = crate::images::prepare(&h.picker.clone(), img, ratatui::layout::Size::new(4, 4)).unwrap();
+    let loaded =
+        crate::images::prepare(&h.picker.clone(), img, vec![1, 2, 3], ratatui::layout::Size::new(4, 4)).unwrap();
     h.on_image("https://i.imgur.com/a.png".into(), Ok(loaded));
     assert!(h.viewer.as_ref().unwrap().protocol.is_some());
     assert!(matches!(h.images.get("https://i.imgur.com/a.png"), Some(ImageState::Ready(_))));
@@ -819,4 +821,530 @@ fn transparent_background_survives_theme_changes() {
     assert_ne!(h.theme.surface, ratatui::style::Color::Reset, "popups keep their own background");
     h.press(KeyCode::Enter);
     assert_ne!(h.theme.bg, ratatui::style::Color::Reset);
+}
+
+fn select_row(h: &mut Harness, row: settings::Row) {
+    h.press(KeyCode::F(7));
+    let rows = settings::rows(&h.config.settings);
+    h.settings_ui.selected = rows.iter().position(|r| *r == row).unwrap();
+}
+
+fn alt(h: &mut Harness, c: char) {
+    h.on_terminal(Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)));
+}
+
+#[test]
+fn rebinding_a_key_in_settings() {
+    use crate::keymap::Action;
+    let mut h = harness().online().with_prefs();
+    select_row(&mut h, settings::Row::Key(Action::Find));
+    h.press(KeyCode::Enter);
+    assert!(matches!(h.modal, Some(Modal::CaptureKey { action: Action::Find })));
+    // Plain letters are for typing; the popup stays open and says why.
+    h.press(KeyCode::Char('g'));
+    assert!(matches!(h.modal, Some(Modal::CaptureKey { .. })));
+    assert!(h.last_toast().unwrap().contains("needed for typing"));
+    alt(&mut h, 'f');
+    assert!(h.modal.is_none());
+    assert_eq!(h.last_toast(), Some("Find a partner: alt+f"));
+
+    // The old key does nothing now; the new one searches.
+    h.press(KeyCode::F(2));
+    h.ctrl('f');
+    assert!(find_payload(&h.sent()).is_none());
+    alt(&mut h, 'f');
+    assert!(find_payload(&h.sent()).is_some());
+
+    // Saved as an override only, and reloaded on restart.
+    assert_eq!(h.config.settings.keys.len(), 1);
+    h.flush();
+    let (saved, warnings) = Config::load(&h.paths.config_file).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(crate::keymap::Keymap::build(&saved.settings.keys).0, h.keymap);
+}
+
+#[test]
+fn rebinding_steals_reset_and_unbind() {
+    use crate::keymap::Action;
+    let mut h = harness().online().with_prefs().partnered();
+    select_row(&mut h, settings::Row::Key(Action::Leave));
+    h.press(KeyCode::Enter);
+    h.ctrl('b');
+    assert_eq!(h.last_toast(), Some("Leave partner / stop searching: ctrl+b (taken from block partner)"));
+    assert!(h.keymap.keys(Action::Block).is_empty());
+
+    // Backspace restores the default (ctrl+d); x unbinds.
+    h.press(KeyCode::Backspace);
+    assert_eq!(h.keymap.hint(Action::Leave).as_deref(), Some("^D"));
+    h.press(KeyCode::Char('x'));
+    assert!(h.keymap.keys(Action::Leave).is_empty());
+    h.press(KeyCode::F(2));
+    h.ctrl('d');
+    assert!(h.modal.is_none(), "unbound: ctrl+d does nothing");
+
+    select_row(&mut h, settings::Row::ResetKeys);
+    h.press(KeyCode::Enter);
+    assert_eq!(h.keymap, crate::keymap::Keymap::default());
+    assert!(h.config.settings.keys.is_empty());
+}
+
+#[test]
+fn chat_scroll_keys_are_rebindable_but_only_act_in_chat() {
+    use crate::keymap::{Action, Chord};
+    let mut h = harness();
+    h.keymap.bind(Action::ScrollPageUp, Chord::parse("alt+k").unwrap());
+    h.chat.last_total = 100;
+    h.chat.last_height = 20;
+    alt(&mut h, 'k');
+    assert!(!h.chat.is_following());
+    h.press(KeyCode::Esc);
+    h.press(KeyCode::PageUp);
+    assert!(h.chat.is_following(), "pgup was moved to alt+k");
+    // In other tabs the same key moves lists instead of the hidden chat.
+    h.press(KeyCode::F(7));
+    let before = h.settings_ui.selected;
+    alt(&mut h, 'k');
+    assert!(h.chat.is_following());
+    assert_eq!(h.settings_ui.selected, before);
+}
+
+#[test]
+fn bad_key_config_warns_instead_of_failing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "[settings.keys]\nfnid = \"alt+f\"\nquit = \"q\"\nfind = \"alt+f\"\n").unwrap();
+    let (config, warnings) = Config::load(&path).unwrap();
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    let map = crate::keymap::Keymap::build(&config.settings.keys).0;
+    assert_eq!(map.hint(crate::keymap::Action::Find).as_deref(), Some("alt+f"));
+}
+
+#[test]
+fn hints_follow_bindings() {
+    use crate::keymap::{Action, Chord};
+    let mut h = harness();
+    h.keymap.bind(Action::Find, Chord::parse("alt+f").unwrap());
+    h.keymap.unbind(Action::Block);
+    let hints = crate::ui::hint_pairs(&h);
+    assert!(hints.contains(&("alt+f".to_owned(), "find")));
+    assert!(!hints.iter().any(|(_, what)| *what == "block"));
+}
+
+// ----- sessions ---------------------------------------------------------------------
+
+#[test]
+fn second_chat_has_its_own_socket_and_state() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.type_str("draft for chat one");
+    h.take_effects();
+    h.run_command(Command::NewChat);
+    assert_eq!(h.session_count(), 2);
+    let effects = h.take_tagged_effects();
+    assert!(matches!(effects.as_slice(), [(1, Effect::Connect(_))]), "{effects:?}");
+    assert!(h.input.is_empty(), "each chat keeps its own draft");
+    assert!(!h.has_partner());
+
+    // Chat 1 comes online and searches; its frames are tagged with its id.
+    h.on_net_for(1, NetEvent::Open);
+    h.ctrl('f');
+    assert!(
+        h.take_tagged_effects()
+            .iter()
+            .any(|(id, e)| *id == 1 && matches!(e, Effect::Send(ClientMessage::FindPartner(_))))
+    );
+
+    // Meanwhile chat 0's partner writes: it lands in chat 0, counted as unseen.
+    h.on_net_for(0, NetEvent::Message(ServerMessage::ReceiveMessage("you there?".into())));
+    assert!(!h.chat.entries.iter().any(|e| e.kind == EntryKind::Partner("you there?".into())));
+    let chat0 = h.sessions().into_iter().find(|s| s.id == 0).unwrap();
+    assert_eq!(chat0.unseen, 1);
+    assert_eq!(chat0.label, "female fox");
+
+    h.switch_session(0);
+    assert_eq!(h.input.text(), "draft for chat one");
+    assert_eq!(h.last_entry(), &EntryKind::Partner("you there?".into()));
+    h.mark_seen();
+    assert_eq!(h.unseen, 0);
+}
+
+#[test]
+fn background_alerts_become_toasts_and_quit_checks_every_chat() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.new_session();
+    h.take_effects();
+    h.on_net_for(0, NetEvent::Message(ServerMessage::PartnerLeft));
+    assert_eq!(h.last_toast(), Some("Chat 1: Partner Left"));
+    assert_eq!(h.tab, Tab::Chat);
+
+    let mut h = harness().online().with_prefs().partnered();
+    h.new_session();
+    h.ctrl('q');
+    assert!(matches!(h.modal, Some(Modal::Confirm { action: Confirm::Quit, .. })), "chat 1 still has a partner");
+}
+
+#[test]
+fn closing_a_chat_closes_its_socket() {
+    let mut h = harness().online().with_prefs();
+    h.new_session();
+    h.take_effects();
+    assert_eq!(h.session_number(), 2);
+    h.run_command(Command::CloseChat);
+    assert_eq!(h.take_tagged_effects(), vec![(1, Effect::CloseSocket)]);
+    assert_eq!(h.session_count(), 1);
+    assert_eq!(h.session_id, 0);
+    h.run_command(Command::CloseChat);
+    assert_eq!(h.session_count(), 1, "the last chat stays");
+    // Events for the closed chat are ignored.
+    h.on_net_for(1, NetEvent::Message(ServerMessage::ReceiveMessage("ghost".into())));
+    assert!(!h.chat.entries.iter().any(|e| e.kind == EntryKind::Partner("ghost".into())));
+}
+
+#[test]
+fn cycling_chats_wraps() {
+    let mut h = harness();
+    h.new_session();
+    h.new_session();
+    assert_eq!(h.session_number(), 3);
+    h.cycle_session(1);
+    assert_eq!(h.session_number(), 1);
+    h.cycle_session(-1);
+    assert_eq!(h.session_number(), 3);
+    h.run_command(Command::SwitchChat(2));
+    assert_eq!(h.session_number(), 2);
+}
+
+// ----- next, requeue, skip ----------------------------------------------------------
+
+#[test]
+fn next_skips_without_asking() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.ctrl('n');
+    assert!(h.modal.is_none());
+    assert!(find_payload(&h.sent()).is_some());
+    assert_eq!(h.partner, PartnerState::Searching);
+}
+
+#[test]
+fn auto_requeue_after_partner_leaves() {
+    let mut h = harness().online().with_prefs();
+    h.config.settings.auto_requeue = true;
+    let mut h = h.partnered();
+    h.server(ServerMessage::PartnerLeft);
+    assert!(matches!(h.last_entry(), EntryKind::System(t) if t.starts_with("Searching again in 3s")));
+    h.on_tick();
+    assert!(h.sent().is_empty());
+    h.now += Duration::from_secs(3);
+    h.on_tick();
+    assert!(find_payload(&h.sent()).is_some());
+
+    // Esc in the chat cancels a pending requeue.
+    let mut h = h.partnered();
+    h.server(ServerMessage::PartnerDisconnected);
+    h.press(KeyCode::Esc);
+    h.now += Duration::from_secs(10);
+    h.on_tick();
+    assert!(h.sent().is_empty());
+    // Leaving on purpose doesn't requeue.
+    let mut h = h.partnered();
+    h.server(ServerMessage::ClientDisconnect);
+    h.now += Duration::from_secs(10);
+    h.on_tick();
+    assert!(h.sent().is_empty());
+}
+
+fn connected_to(h: &mut Harness, kinks: &str, language: Option<&str>) {
+    h.server(ServerMessage::PartnerConnected(PartnerInfo {
+        gender: "Male".into(),
+        species: "Cat".into(),
+        kinks: kinks.into(),
+        role: "Dominant".into(),
+        language: language.map(Into::into),
+    }));
+}
+
+#[test]
+fn limits_skip_partners_before_the_chat_starts() {
+    let mut h = harness().online().with_prefs();
+    h.config.active_mut().preferences.toggle(Field::Limits, "Scat");
+    h.ctrl('f');
+    h.take_effects();
+    connected_to(&mut h, "Biting, Scat", None);
+    assert!(find_payload(&h.sent()).is_some(), "searched again");
+    assert!(!h.has_partner());
+    assert!(
+        matches!(h.last_entry(), EntryKind::System(t) if t == "Skipped a Dominant Male Cat: they're into Scat, one of your limits.")
+    );
+    assert!(h.logs.items.is_empty(), "skipped partners don't get a log");
+
+    connected_to(&mut h, "Biting", None);
+    assert!(h.has_partner());
+    assert!(h.sent().is_empty());
+}
+
+#[test]
+fn shared_kink_and_language_rules() {
+    let mut h = harness().online().with_prefs();
+    h.config.settings.skip.min_shared_kinks = 2;
+    h.config.settings.skip.language_mismatch = true;
+    h.config.active_mut().preferences.kinks = vec!["Biting".into(), "Musk".into()];
+    h.config.active_mut().preferences.language = "English".into();
+    let reason = |h: &Harness, kinks: &str, lang: Option<&str>| {
+        h.skip_reason(&PartnerInfo {
+            gender: "M".into(),
+            species: "S".into(),
+            kinks: kinks.into(),
+            role: "R".into(),
+            language: lang.map(Into::into),
+        })
+    };
+    assert_eq!(reason(&h, "Biting, Tickling", None).as_deref(), Some("only 1 shared kink"));
+    assert_eq!(reason(&h, "Biting, Musk", None), None);
+    assert_eq!(reason(&h, "any", None), None, "partners open to anything pass");
+    assert_eq!(reason(&h, "Biting, Musk", Some("French")).as_deref(), Some("they chose French"));
+    assert_eq!(reason(&h, "Biting, Musk", Some("any")), None);
+    h.config.settings.skip.enabled = false;
+    assert_eq!(reason(&h, "Tickling", Some("French")), None);
+}
+
+#[test]
+fn skipping_stops_after_too_many_in_a_row() {
+    let mut h = harness().online().with_prefs();
+    h.config.settings.skip.max_in_a_row = 2;
+    h.config.active_mut().preferences.toggle(Field::Limits, "Scat");
+    h.ctrl('f');
+    for _ in 0..2 {
+        connected_to(&mut h, "Scat", None);
+        assert!(!h.has_partner());
+    }
+    connected_to(&mut h, "Scat", None);
+    assert!(h.has_partner(), "the third one stays so we don't spin forever");
+    assert!(
+        h.chat
+            .entries
+            .iter()
+            .any(|e| matches!(&e.kind, EntryKind::System(t) if t.starts_with("Auto-skipped 2 partners")))
+    );
+}
+
+// ----- snippets, editor, drawer export ----------------------------------------------
+
+#[test]
+fn snippets_insert_with_placeholders() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.type_str("/snip-add intro Hi {partner_species}! I'm a {species}.");
+    h.press(KeyCode::Enter);
+    assert_eq!(h.drawer.snippets[0].name, "intro");
+    h.take_effects();
+    h.type_str("/snip intro");
+    h.press(KeyCode::Enter);
+    assert_eq!(h.input.text(), "Hi Fox! I'm a Wolf.");
+    assert!(h.sent().contains(&ClientMessage::Typing(true)));
+
+    h.input.clear();
+    h.ctrl('g');
+    h.type_str("int");
+    h.press(KeyCode::Enter);
+    assert_eq!(h.input.text(), "Hi Fox! I'm a Wolf.");
+
+    h.run_command(Command::Snip(Some("nope".into())));
+    assert!(h.last_toast().unwrap().contains("No snippet called `nope`"));
+}
+
+#[test]
+fn snippet_shelf_add_and_delete() {
+    let mut h = harness();
+    h.press(KeyCode::F(4));
+    h.press(KeyCode::Char('s'));
+    assert_eq!(h.drawer_ui.shelf, Shelf::Snippets);
+    h.press(KeyCode::Char('a'));
+    h.type_str("bye");
+    h.press(KeyCode::Enter);
+    h.type_str("Thanks, take care!");
+    h.press(KeyCode::Enter);
+    assert_eq!(h.drawer.snippets[0].text, "Thanks, take care!");
+    // An empty text opens the editor instead.
+    h.press(KeyCode::Char('a'));
+    h.type_str("long");
+    h.press(KeyCode::Enter);
+    h.press(KeyCode::Enter);
+    assert!(
+        h.take_effects().iter().any(|e| matches!(e, Effect::OpenEditor { purpose: EditorPurpose::Snippet(_), .. }))
+    );
+    h.on_editor(EditorPurpose::Snippet(1), Ok("Line one\nline two\n".into()));
+    assert_eq!(h.drawer.snippets[1].text, "Line one\nline two");
+    h.drawer_ui.snippets.selected = 0;
+    h.press(KeyCode::Char('d'));
+    h.press(KeyCode::Char('y'));
+    assert_eq!(h.drawer.snippets.len(), 1);
+}
+
+#[test]
+fn editor_round_trip_joins_paragraphs() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.config.settings.editor = "my-editor --wait".into();
+    h.input.set("first / second");
+    h.ctrl('x');
+    let effects = h.take_effects();
+    let Some(Effect::OpenEditor { command, text, purpose }) = effects.first() else { panic!("{effects:?}") };
+    assert_eq!(command, "my-editor --wait");
+    assert_eq!(text, "first\n\nsecond\n");
+    assert_eq!(*purpose, EditorPurpose::Message);
+
+    h.on_editor(EditorPurpose::Message, Ok("A longer\npost.\n\nNew paragraph.\n".into()));
+    assert_eq!(h.input.text(), "A longer post. / New paragraph.");
+    h.on_editor(EditorPurpose::Message, Err("editor crashed".into()));
+    assert_eq!(h.last_toast(), Some("Editor: editor crashed"));
+}
+
+#[test]
+fn drawer_export_and_import() {
+    let mut h = harness();
+    h.run_command(Command::Save { url: "https://a.com/".into(), label: "a #ref".into() });
+    h.run_command(Command::SnipAdd { name: "hi".into(), text: "hello".into() });
+    let path = h._dir.path().join("drawer.json");
+    h.run_command(Command::DrawerExport(path.display().to_string()));
+    let mut other = harness();
+    other.run_command(Command::DrawerImport(path.display().to_string()));
+    assert_eq!(other.last_toast(), Some("Imported 1 links and 1 snippets"));
+    assert_eq!(other.drawer.items[0].tags, vec!["ref"]);
+}
+
+// ----- logs, notifications ----------------------------------------------------------
+
+#[test]
+fn logs_pin_rename_and_search() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.server(ServerMessage::ReceiveMessage("let's meet at the lighthouse".into()));
+    h.server(ServerMessage::PartnerLeft);
+    let mut h = h.partnered();
+    h.server(ServerMessage::PartnerLeft);
+    h.press(KeyCode::F(5));
+    // Newest first: select the older chat and pin it; it moves to the top.
+    h.logs_ui.list.selected = 1;
+    h.press(KeyCode::Char('p'));
+    assert_eq!(h.visible_logs()[0], 0);
+    assert_eq!(h.logs_ui.list.selected, 0, "selection follows the pinned chat");
+    h.press(KeyCode::Char('r'));
+    h.type_str("beach one");
+    h.press(KeyCode::Enter);
+    assert_eq!(h.logs.items[0].title(), "beach one");
+    h.press(KeyCode::Char('/'));
+    h.type_str("lighthouse");
+    h.press(KeyCode::Enter);
+    assert_eq!(h.visible_logs(), vec![0]);
+}
+
+#[test]
+fn keywords_notify_even_when_messages_dont() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.config.settings.notify.keywords = vec!["Ember".into()];
+    h.set_focused(false);
+    h.server(ServerMessage::ReceiveMessage("so how are you".into()));
+    assert!(!h.take_effects().contains(&Effect::Bell));
+    h.server(ServerMessage::ReceiveMessage("*nuzzles ember*".into()));
+    assert!(h.take_effects().contains(&Effect::Bell));
+    assert_eq!(h.window_title(), "Mentioned you · yap");
+}
+
+#[test]
+fn sound_uses_the_configured_command() {
+    let mut h = harness().online().with_prefs();
+    h.config.settings.notify.sound = true;
+    h.config.settings.notify.sound_command = "play ding.wav".into();
+    h.set_focused(false);
+    let mut h = h.partnered();
+    h.server(ServerMessage::PartnerLeft);
+    assert!(h.take_effects().contains(&Effect::PlaySound("play ding.wav".into())));
+}
+
+// ----- mouse ------------------------------------------------------------------------
+
+fn frame(h: &mut Harness) {
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(110, 30)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut h.app)).unwrap();
+}
+
+fn click_on(h: &mut Harness, target: &Hit) {
+    let (rect, _) = h.hits.borrow().iter().find(|(_, hit)| hit == target).cloned().unwrap_or_else(|| {
+        panic!(
+            "no hitbox for {target:?}; have {:?}",
+            h.hits.borrow().iter().map(|(_, h)| h.clone()).collect::<Vec<_>>()
+        )
+    });
+    h.on_terminal(Event::Mouse(ratatui::crossterm::event::MouseEvent {
+        kind: ratatui::crossterm::event::MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
+        column: rect.x,
+        row: rect.y,
+        modifiers: KeyModifiers::NONE,
+    }));
+    frame(h);
+}
+
+#[test]
+fn clicking_tabs_rows_and_double_clicks() {
+    let mut h = harness();
+    frame(&mut h);
+    click_on(&mut h, &Hit::Tab(Tab::Settings));
+    assert_eq!(h.tab, Tab::Settings);
+    let row = settings::rows(&h.config.settings).iter().position(|r| *r == settings::Row::Timestamps).unwrap();
+    let target = Hit::Row { list: ListId::Settings, index: row };
+    click_on(&mut h, &target);
+    assert_eq!(h.settings_ui.selected, row);
+    assert!(h.config.settings.timestamps, "a single click only selects");
+    click_on(&mut h, &target);
+    assert!(!h.config.settings.timestamps, "a double click toggles");
+
+    // Option checkboxes toggle on every click.
+    click_on(&mut h, &Hit::Tab(Tab::Preferences));
+    h.prefs_ui.field = Field::ALL.iter().position(|f| *f == Field::Kinks).unwrap();
+    frame(&mut h);
+    click_on(&mut h, &Hit::Row { list: ListId::PrefsOptions, index: 1 });
+    assert_eq!(h.config.active().preferences.kinks, vec!["any", "3+ Penetration"]);
+}
+
+#[test]
+fn clicking_links_images_and_viewer_buttons() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.server(ServerMessage::ReceiveMessage("gallery: https://example.com/g".into()));
+    h.take_effects();
+    frame(&mut h);
+    click_on(&mut h, &Hit::Message(vec!["https://example.com/g".into()]));
+    assert_eq!(h.take_effects(), vec![Effect::OpenUrl("https://example.com/g".into())]);
+
+    // A loaded inline image opens the viewer; its buttons work.
+    let url = "https://i.imgur.com/pic.png".to_string();
+    let png = {
+        let img: image::RgbaImage = image::ImageBuffer::from_pixel(8, 8, image::Rgba([1, 2, 3, 255]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let loaded = crate::images::prepare(
+        &h.picker.clone(),
+        crate::images::decode(&png).unwrap(),
+        png.clone(),
+        ratatui::layout::Size::new(4, 2),
+    )
+    .unwrap();
+    h.server(ServerMessage::ReceiveMessage(url.clone()));
+    h.on_image(url.clone(), Ok(loaded));
+    frame(&mut h);
+    click_on(&mut h, &Hit::Image(url.clone()));
+    assert!(h.viewer.is_some());
+    click_on(&mut h, &Hit::Viewer(ViewerButton::SaveImage));
+    assert!(h.last_toast().unwrap().starts_with("Saved"));
+    assert_eq!(std::fs::read(h.paths.downloads_dir.join("pic.png")).unwrap(), png);
+    click_on(&mut h, &Hit::Viewer(ViewerButton::Close));
+    assert!(h.viewer.is_none());
+}
+
+#[test]
+fn clicking_sessions_and_new_chat() {
+    let mut h = harness();
+    h.new_session();
+    frame(&mut h);
+    click_on(&mut h, &Hit::Session(0));
+    assert_eq!(h.session_id, 0);
+    click_on(&mut h, &Hit::NewSession);
+    assert_eq!(h.session_count(), 3);
 }

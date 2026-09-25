@@ -52,6 +52,38 @@ pub fn truncate(s: &str, max: usize) -> String {
     out
 }
 
+/// Byte ranges where any of `keywords` appears in `text` as a whole word, ignoring
+/// case. Overlaps resolve to the earliest, longest match.
+pub fn find_keywords(text: &str, keywords: &[String]) -> Vec<(usize, usize)> {
+    let lower = text.to_lowercase();
+    // Lowercasing can change byte lengths for some scripts; only match when it didn't.
+    if lower.len() != text.len() {
+        return Vec::new();
+    }
+    let is_word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    let mut hits: Vec<(usize, usize)> = Vec::new();
+    for kw in keywords.iter().map(|k| k.trim().to_lowercase()).filter(|k| !k.is_empty()) {
+        let mut from = 0;
+        while let Some(pos) = lower[from..].find(&kw) {
+            let (start, end) = (from + pos, from + pos + kw.len());
+            let before = lower[..start].chars().next_back();
+            let after = lower[end..].chars().next();
+            if !is_word(before) && !is_word(after) {
+                hits.push((start, end));
+            }
+            from = start + kw.chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    hits.sort_by_key(|&(s, e)| (s, std::cmp::Reverse(e)));
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (s, e) in hits {
+        if merged.last().is_none_or(|&(_, last_end)| s >= last_end) {
+            merged.push((s, e));
+        }
+    }
+    merged
+}
+
 /// A run of non-whitespace, possibly spanning several styles (e.g. a link then a comma).
 #[derive(Debug, Default)]
 struct Word {
@@ -261,6 +293,17 @@ mod tests {
     #[test]
     fn survives_zero_width() {
         assert_eq!(wrap_str("ab", 0, 3), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn finds_whole_word_keywords() {
+        let kw = vec!["Ash".to_string(), "red fox".to_string(), " ".to_string()];
+        let text = "ASH saw ashes, then Ash_ and a red fox. ash!";
+        let hits = find_keywords(text, &kw);
+        let found: Vec<&str> = hits.iter().map(|&(s, e)| &text[s..e]).collect();
+        assert_eq!(found, vec!["ASH", "red fox", "ash"]);
+        assert!(find_keywords("nothing here", &kw).is_empty());
+        assert!(find_keywords("🦊 ash 🦊", &kw).len() == 1);
     }
 
     #[test]

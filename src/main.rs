@@ -113,6 +113,7 @@ fn main() -> Result<()> {
             println!("themes  {}", paths.themes_dir.display());
             println!("drawer  {}", paths.drawer_file.display());
             println!("logs    {}", paths.logs_dir.display());
+            println!("images  {}", paths.downloads_dir.display());
             return Ok(());
         }
         None => {}
@@ -174,7 +175,7 @@ fn main() -> Result<()> {
         for w in warnings.into_iter().chain(theme_errors).chain(log_warnings) {
             app.toast(yap::app::Level::Warning, w);
         }
-        runtime.block_on(yap::runtime::run(&mut terminal, app))
+        runtime.block_on(yap::runtime::run(&mut terminal, app, mouse))
     });
     restore_terminal();
     result

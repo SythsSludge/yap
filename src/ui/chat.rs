@@ -1,21 +1,22 @@
 //! The chat tab: sidebar, transcript with inline images, drawer panel, input.
 //! Transcript layout is shared with the logs tab.
 
-use super::{columns, list, section};
+use super::{Rows, columns, render_list, section};
 use crate::app::chat::{Entry, EntryKind};
-use crate::app::{App, ChatFocus, PartnerState};
+use crate::app::{App, ChatFocus, Hit, ListId, PartnerState};
 use crate::catalog::{ANY, MAX_MESSAGE_LEN};
 use crate::config::ChatStyle;
 use crate::images::{ImageState, Loaded};
+use crate::keymap::Action;
 use crate::links::find_links;
 use crate::prefs::Field;
-use crate::text::{truncate, width, wrap};
+use crate::text::{find_keywords, truncate, width, wrap};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Clear, ListItem, Paragraph, Wrap};
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
 use std::sync::Arc;
 
@@ -26,6 +27,7 @@ const MAX_INPUT_ROWS: usize = 6;
 const NAME_COL: usize = 9;
 
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.mark_seen();
     let show_sidebar = app.config.settings.show_sidebar && area.width >= 90;
     let show_drawer = app.drawer_panel && area.width >= 60;
     let cols = columns(
@@ -38,7 +40,12 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(if show_drawer { DRAWER_WIDTH } else { 0 }),
         ],
     );
-    let (sidebar, middle, drawer) = (cols[0], cols[1], cols[2]);
+    let (sidebar, mut middle, drawer) = (cols[0], cols[1], cols[2]);
+    if app.session_count() > 1 && middle.height > 6 {
+        let [strip, rest] = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).areas(middle);
+        draw_sessions(frame, app, Rect::new(strip.x, strip.y, strip.width, 1));
+        middle = rest;
+    }
 
     let input_width = middle.width.saturating_sub(6).max(1) as usize;
     let (rows, _) = app.input.layout(input_width);
@@ -61,13 +68,19 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
 /// A vertical slice of the transcript.
 pub(super) enum Chunk {
     Lines(Vec<Line<'static>>),
-    Image { loaded: Arc<Loaded>, x: u16 },
+    /// A message body; clicking it opens its links.
+    Message(Vec<Line<'static>>, Vec<String>),
+    Image {
+        loaded: Arc<Loaded>,
+        x: u16,
+        url: String,
+    },
 }
 
 impl Chunk {
     fn height(&self) -> usize {
         match self {
-            Chunk::Lines(l) => l.len(),
+            Chunk::Lines(l) | Chunk::Message(l, _) => l.len(),
             Chunk::Image { loaded, .. } => loaded.rows() as usize,
         }
     }
@@ -77,20 +90,24 @@ pub(super) fn total_height(chunks: &[Chunk]) -> usize {
     chunks.iter().map(Chunk::height).sum()
 }
 
-fn message_spans(text: &str, base: Style, link: Style) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    let mut last = 0;
-    for l in find_links(text) {
-        if l.start > last {
-            spans.push(Span::styled(text[last..l.start].to_owned(), base));
-        }
-        spans.push(Span::styled(l.url.clone(), link));
-        last = l.end;
-    }
-    if last < text.len() {
-        spans.push(Span::styled(text[last..].to_owned(), base));
-    }
-    spans
+/// Split a message into styled spans: links in `link`, keyword hits in `mark`.
+fn message_spans(text: &str, base: Style, link: Style, marks: &[(usize, usize)], mark: Style) -> Vec<Span<'static>> {
+    let links: Vec<(usize, usize)> = find_links(text).iter().map(|l| (l.start, l.end)).collect();
+    let mut cuts: Vec<usize> = vec![0, text.len()];
+    cuts.extend(links.iter().chain(marks).flat_map(|&(s, e)| [s, e]));
+    cuts.sort_unstable();
+    cuts.dedup();
+    let inside = |ranges: &[(usize, usize)], at: usize| ranges.iter().any(|&(s, e)| s <= at && at < e);
+    cuts.windows(2)
+        .filter(|w| w[0] < w[1])
+        .map(|w| {
+            let mut style = if inside(&links, w[0]) { link } else { base };
+            if inside(marks, w[0]) {
+                style = style.patch(mark);
+            }
+            Span::styled(text[w[0]..w[1]].to_owned(), style)
+        })
+        .collect()
 }
 
 /// Wrap with a hanging indent: the first line starts with `prefix` (exactly `indent`
@@ -222,6 +239,10 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, typing:
         let name_style = Style::new().fg(name_color).add_modifier(Modifier::BOLD);
         let new_group = last_who != Some(who);
         last_who = Some(who);
+        let links: Vec<String> = find_links(text).into_iter().map(|l| l.url).collect();
+        // Keywords only light up in what your partner says.
+        let marks = if who == Who::Partner { find_keywords(text, &s.notify.keywords) } else { Vec::new() };
+        let mark = Style::new().fg(t.highlight).add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
 
         let image_x: u16 = match style {
             ChatStyle::Cozy => {
@@ -233,8 +254,8 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, typing:
                     }
                     out.push(Chunk::Lines(vec![Line::from(header)]));
                 }
-                let spans = message_spans(text, Style::new().fg(t.fg), t.link());
-                out.push(Chunk::Lines(wrap(&spans, width, 2)));
+                let spans = message_spans(text, Style::new().fg(t.fg), t.link(), &marks, mark);
+                out.push(Chunk::Message(wrap(&spans, width, 2), links));
                 2
             }
             ChatStyle::Compact => {
@@ -246,8 +267,8 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, typing:
                 }
                 let shown = if new_group { name } else { "" };
                 prefix.push(Span::styled(format!("{shown:<w$}", w = NAME_COL), name_style));
-                let spans = message_spans(text, Style::new().fg(t.fg), t.link());
-                out.push(Chunk::Lines(hanging(prefix, indent, &spans, width)));
+                let spans = message_spans(text, Style::new().fg(t.fg), t.link(), &marks, mark);
+                out.push(Chunk::Message(hanging(prefix, indent, &spans, width), links));
                 indent as u16
             }
             ChatStyle::Sms => {
@@ -268,7 +289,7 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, typing:
                 let max_inner = (width * 3 / 4).max(8).min(width.saturating_sub(2)).max(1);
                 let base = Style::new().fg(fg).bg(bg);
                 let link = base.add_modifier(Modifier::UNDERLINED);
-                let wrapped = wrap(&message_spans(text, base, link), max_inner, 0);
+                let wrapped = wrap(&message_spans(text, base, link, &marks, mark), max_inner, 0);
                 let inner = wrapped.iter().map(Line::width).max().unwrap_or(0);
                 let bubble_w = inner + 2;
                 let pad = if who == Who::You { width.saturating_sub(bubble_w) } else { 0 };
@@ -284,7 +305,7 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, typing:
                         Line::from(spans)
                     })
                     .collect();
-                out.push(Chunk::Lines(lines));
+                out.push(Chunk::Message(lines, links));
                 pad as u16
             }
         };
@@ -300,13 +321,15 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, typing:
                     } else {
                         image_x
                     };
-                    out.push(Chunk::Image { loaded: loaded.clone(), x });
+                    out.push(Chunk::Image { loaded: loaded.clone(), x, url: url.clone() });
                 }
                 Some(ImageState::Loading) => out.push(note("loading preview…", t.muted())),
                 Some(ImageState::Failed(e)) => {
                     out.push(note(&format!("preview unavailable: {}", truncate(e, 60)), t.muted()))
                 }
-                None => out.push(note("[image] ^O then p to preview", t.muted())),
+                None => {
+                    out.push(note(&format!("[image] {} then p to preview", app.keymap.label(Action::Links)), t.muted()))
+                }
             }
         }
     }
@@ -329,25 +352,43 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, typing:
 }
 
 /// Render chunks into `area`, starting from transcript line `top`.
-pub(super) fn render_chunks(frame: &mut Frame, area: Rect, chunks: &[Chunk], top: usize) {
+/// Render chunks into `area` from transcript line `top`, recording click targets for
+/// messages with links and for images.
+pub(super) fn render_chunks(frame: &mut Frame, app: &App, area: Rect, chunks: &[Chunk], top: usize) {
     let height = area.height as usize;
     let mut y = 0usize;
     for chunk in chunks {
         let h = chunk.height();
         if y + h > top && y < top + height {
             match chunk {
-                Chunk::Lines(lines) => {
+                Chunk::Lines(lines) | Chunk::Message(lines, _) => {
                     for (i, line) in lines.iter().enumerate() {
                         let row = y + i;
                         if row >= top && row < top + height {
                             let rect = Rect::new(area.x, area.y + (row - top) as u16, area.width, 1);
                             frame.render_widget(Paragraph::new(line.clone()), rect);
+                            if let Chunk::Message(_, links) = chunk
+                                && !links.is_empty()
+                            {
+                                app.hit(rect, Hit::Message(links.clone()));
+                            }
                         }
                     }
                 }
-                Chunk::Image { loaded, x } => {
+                Chunk::Image { loaded, x, url } => {
                     let pos = SignedPosition { x: *x as i16, y: (y as i64 - top as i64) as i16 };
                     frame.render_widget(SlicedImage::new(&loaded.inline, pos), area);
+                    let first = y.max(top);
+                    let last = (y + h).min(top + height);
+                    let size = loaded.inline.size();
+                    let x = area.x + (*x).min(area.width);
+                    let rect = Rect::new(
+                        x,
+                        area.y + (first - top) as u16,
+                        size.width.min(area.right() - x),
+                        (last - first) as u16,
+                    );
+                    app.hit(rect, Hit::Image(url.clone()));
                 }
             }
         }
@@ -383,17 +424,23 @@ fn welcome(app: &App) -> Vec<Line<'static>> {
             dim("profile "),
             key(&app.config.active_profile),
             dim(" is ready. Press "),
-            key("^F"),
+            key(&app.keymap.label(Action::Find)),
             dim(" to find a partner"),
         ])),
         Err(e) => lines.push(Line::from(vec![
             pointer(),
             dim("set your preferences first ("),
-            key("F3"),
+            key(&app.keymap.label(Action::TabPreferences)),
             dim(format!("): {e}").as_str()),
         ])),
     }
-    lines.push(Line::from(vec![pointer(), key("F1"), dim(" for keys, "), key("/help"), dim(" for commands")]));
+    lines.push(Line::from(vec![
+        pointer(),
+        key(&app.keymap.label(Action::Help)),
+        dim(" for keys, "),
+        key("/help"),
+        dim(" for commands"),
+    ]));
     lines
 }
 
@@ -417,7 +464,7 @@ fn draw_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
     let top = app.chat.top_line(total, height);
     app.chat.last_total = total;
     app.chat.last_height = height;
-    render_chunks(frame, content, &chunks, top);
+    render_chunks(frame, app, content, &chunks, top);
 
     if !app.chat.is_following() {
         let label = match app.chat.unread {
@@ -493,7 +540,10 @@ fn draw_drawer_panel(frame: &mut Frame, app: &App, area: Rect) {
             Line::from(Span::styled("nothing saved yet", t.muted())),
             Line::default(),
             Line::from(Span::styled("/save <url> [label] [#tags]", Style::new().fg(t.fg))),
-            Line::from(Span::styled("or ^O then s on a chat link", t.muted())),
+            Line::from(Span::styled(
+                format!("or {} then s on a chat link", app.keymap.label(Action::Links)),
+                t.muted(),
+            )),
         ];
         frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
         return;
@@ -513,8 +563,56 @@ fn draw_drawer_panel(frame: &mut Frame, app: &App, area: Rect) {
             ])
         })
         .collect();
-    let mut state = ListState::default().with_selected(focused.then_some(app.drawer_ui.list.selected));
-    frame.render_stateful_widget(list(app, items, focused).style(Style::new().fg(t.fg)), inner, &mut state);
+    let selected = focused.then_some(app.drawer_ui.list.selected);
+    render_list(frame, app, inner, items, Rows::new(ListId::ChatDrawer, selected, focused));
+}
+
+/// One tab per open chat, with unread counts; `+` opens another.
+fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
+    /// Append `parts` to the strip, recording a click target for them if given.
+    fn place(
+        app: &App,
+        area: Rect,
+        x: &mut u16,
+        spans: &mut Vec<Span<'static>>,
+        parts: Vec<Span<'static>>,
+        hit: Option<Hit>,
+    ) {
+        let w: u16 = parts.iter().map(|p| p.width() as u16).sum();
+        if let Some(hit) = hit
+            && *x + w <= area.right()
+        {
+            app.hit(Rect::new(*x, area.y, w, 1), hit);
+        }
+        *x += w;
+        spans.extend(parts);
+    }
+
+    let t = &app.theme;
+    let mut x = area.x;
+    let mut spans = Vec::new();
+    for s in app.sessions() {
+        let label = format!(" {} {} ", s.number, truncate(&s.label, 18));
+        let style = if s.active {
+            Style::new().fg(t.fg).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else if s.online {
+            Style::new().fg(t.muted)
+        } else {
+            t.muted().add_modifier(Modifier::DIM)
+        };
+        let mut parts = vec![Span::styled(label, style)];
+        if s.unseen > 0 {
+            parts.push(Span::styled(format!("{} ", s.unseen), Style::new().fg(t.accent).add_modifier(Modifier::BOLD)));
+        }
+        place(app, area, &mut x, &mut spans, parts, Some(Hit::Session(s.id)));
+        place(app, area, &mut x, &mut spans, vec![Span::styled("│", t.muted().add_modifier(Modifier::DIM))], None);
+    }
+    let new_label = match app.keymap.hint(Action::NewChat) {
+        Some(k) => format!(" + new ({k}) "),
+        None => " + new ".into(),
+    };
+    place(app, area, &mut x, &mut spans, vec![Span::styled(new_label, t.muted())], Some(Hit::NewSession));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 // ----- input --------------------------------------------------------------------
@@ -535,6 +633,7 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     }
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    app.hit(area, Hit::Input);
     if inner.width < 3 || inner.height == 0 {
         return;
     }

@@ -1,13 +1,14 @@
 //! The logs tab: earlier chats, one per partner.
 
 use super::chat::{layout_entries, render_chunks, total_height};
-use super::{columns, list, section};
+use super::{Rows, columns, render_list, section};
 use crate::app::App;
+use crate::app::ListId;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{ListItem, Paragraph, Wrap};
 
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let cols = columns(frame, app, area, &[Constraint::Length(40), Constraint::Min(20)]);
@@ -66,12 +67,29 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
                     }
                 }
             }
-            ListItem::new(vec![Line::from(Span::styled(conv.title(), Style::new().fg(t.fg))), Line::from(meta)])
+            let mut title = Vec::new();
+            if conv.pinned {
+                title.push(Span::styled("◆ ", Style::new().fg(t.accent)));
+            }
+            title.push(Span::styled(conv.title(), Style::new().fg(t.fg)));
+            if conv.name.is_some() {
+                title.push(Span::styled(format!("  {}", conv.partner_title()), t.muted()));
+            }
+            let mut lines = vec![Line::from(title), Line::from(meta)];
+            // When searching, show where the words turned up.
+            let needle = app.logs_ui.list.filter.to_lowercase();
+            if let Some(excerpt) = conv.text_match(&needle) {
+                let width = area.width.saturating_sub(6) as usize;
+                lines.push(Line::from(Span::styled(
+                    format!("\u{201c}{}\u{201d}", crate::text::truncate(&excerpt, width)),
+                    t.muted().add_modifier(Modifier::ITALIC),
+                )));
+            }
+            ListItem::new(lines)
         })
         .collect();
     let selected = app.logs_ui.list.selected.min(visible.len() - 1);
-    let mut state = ListState::default().with_selected(Some(selected));
-    frame.render_stateful_widget(list(app, items, !app.logs_ui.reading), list_area, &mut state);
+    render_list(frame, app, list_area, items, Rows::new(ListId::Logs, Some(selected), !app.logs_ui.reading));
 }
 
 fn draw_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -98,5 +116,5 @@ fn draw_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
     let total = total_height(&chunks);
     let max_top = total.saturating_sub(inner.height as usize);
     app.logs_ui.scroll = app.logs_ui.scroll.min(max_top);
-    render_chunks(frame, inner, &chunks, app.logs_ui.scroll);
+    render_chunks(frame, app, inner, &chunks, app.logs_ui.scroll);
 }

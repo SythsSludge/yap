@@ -9,11 +9,31 @@ indicator, block, disconnect, themes, notifications), plus the following:
 - **Profiles**: named preference sets, switchable with `Ctrl-P`. Export and import as TOML or
   JSON. Imports also accept the website's own `localStorage`, so you can bring your
   browser preferences across.
-- **Drawer**: saved, labelled and tagged reference links (ref sheets, galleries). Filter by
-  tag, and drop one into the chat from the side panel in two keystrokes.
-- **Chat logs**: every partner gets their own conversation in the Logs tab. Logs can be
-  saved to disk (off by default). Optionally, the chat view starts fresh for each partner
-  instead of scrolling forever.
+- **Drawer**: saved, labelled and tagged reference links (ref sheets, galleries) plus your
+  snippets. Filter by tag, drop a link into the chat from the side panel, and export or
+  import the whole drawer (`E`/`I`) to move it between machines.
+- **Chat logs**: every partner gets their own conversation in the Logs tab, which you can
+  pin, name, and search (including what was said). Logs can be saved to disk (off by
+  default). Optionally, the chat view starts fresh for each partner instead of scrolling
+  forever.
+- **Notifications**: title flash, bell, desktop notification and an optional sound while
+  you're away; keywords (say, your character's name) always notify. While you're in the
+  app but looking elsewhere, you get a toast instead.
+- **Several chats at once**: `alt+n` opens another chat (its own connection, so the server
+  sees a separate person, just like a second browser tab). Chats show as tabs above the
+  transcript with unread counts; `ctrl+pgup`/`ctrl+pgdn` or a click switches.
+- **Snippets**: saved text (your intro, your limits, a polite goodbye) inserted with `^G`
+  or `/snip <name>`. `{species}`, `{partner_species}` and friends are filled in.
+- **Fast re-rolls**: `^N` skips to a new partner without asking, and an optional
+  auto-requeue searches again a few seconds after a partner leaves.
+- **Auto-skip rules**: limits per profile (kinks you never want), a minimum number of
+  shared kinks, and a language check. The server doesn't know about these; yap just
+  leaves and searches again.
+- **Write in your editor**: `^X` opens `$EDITOR` for long posts; blank lines become a
+  paragraph separator you choose, since the site only takes one line per message.
+- **Mouse**: click tabs, chats, list rows (double-click to activate), messages to open
+  their links, and inline images to preview them. The image viewer has buttons to open,
+  copy the link, save to the drawer, or save the image file to your Downloads.
 - **Three chat layouts**: cozy (name above each message), compact (one line each), and
   messages (bubbles, received on the left, sent on the right).
 - **Inline images** from trusted domains, using the kitty graphics protocol (sixel, iTerm2
@@ -52,6 +72,11 @@ Turning off *Settings → Image previews* skips the query.
 | `F1` | help (all keys and commands) |
 | `F2`–`F7` / `Alt-1`–`6` | Chat, Preferences, Drawer, Logs, Traffic, Settings |
 | `Ctrl-F` | find a partner (asks first if you already have one) |
+| `Ctrl-N` | skip to the next partner, no questions asked |
+| `Ctrl-G` | insert a snippet |
+| `Ctrl-X` | write the message in your editor |
+| `Alt-N` / `Alt-W` | open / close a chat |
+| `Ctrl-PgUp` / `Ctrl-PgDn` | previous / next chat |
 | `Ctrl-D` | leave partner; while searching, stop searching |
 | `Ctrl-B` | block current or previous partner |
 | `Ctrl-O` | links in the chat: open, preview, save to drawer, insert, copy, trust host |
@@ -62,6 +87,22 @@ Turning off *Settings → Image previews* skips the query.
 | `PgUp`/`PgDn`, `Shift-↑/↓`, wheel | scroll; `Esc` jumps to the newest message |
 | `↑`/`↓` | message history |
 | `Ctrl-Q` / `Ctrl-C` | quit |
+
+All of these except `Ctrl-C` can be rebound: *Settings → Keys*, press `Enter` on an action,
+then press the new key. `Backspace` restores the default and `x` unbinds. Rebinds are saved
+as overrides in the config:
+
+```toml
+[settings.keys]
+find = "alt+f"
+leave = ["ctrl+l", "f9"]
+block = []          # unbound
+```
+
+Keys are written like `ctrl+f`, `alt+shift+x`, `f5`, `pgup`, `shift+up` or `ctrl+plus`.
+Keys needed for typing and editing (plain letters, Enter, arrows, Esc, Tab, `Ctrl-W`,
+`Ctrl-U`) can't be taken. An unknown action or key in the file is reported at startup,
+and the rest of the config still loads.
 
 The chat box also takes commands: `/find`, `/leave`, `/block`, `/save <url> [label]`,
 `/profile [name]`, `/theme [name]`, `/export <path>`, `/import <path>`, `/trust <domain>`,
@@ -76,9 +117,18 @@ literal `/`.
   file is reported, not overwritten.
 - `~/.config/yap/themes/*.toml`: custom themes.
 - `~/.local/share/yap/drawer.toml`: the drawer.
+- `~/Downloads` (or your XDG download folder): images saved from the viewer.
 - `~/.local/share/yap/logs/*.jsonl`: chat logs, one file per partner, only when *Save chat
   logs to disk* is on. The folder is private (0700) and the files are 0600. Deleting a chat
   in the Logs tab deletes its file.
+
+### Snippets
+
+In the Drawer tab press `s` to switch to snippets, then `a` to add one (leave the text
+empty to write it in your editor). Or from the chat box: `/snip-add intro Hi! I'm a
+{species} looking for a {partner_species}...`. These placeholders are filled in when you
+insert: `{profile}`, `{gender}`, `{species}`, `{role}`, `{partner_gender}`,
+`{partner_species}`, `{partner_role}`, `{partner_language}`.
 
 ### Drawer tags
 

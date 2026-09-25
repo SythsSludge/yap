@@ -12,14 +12,16 @@ mod prefs;
 mod settings;
 mod traffic;
 
-use crate::app::{App, ConnStatus, Level, PartnerState, Tab};
+use crate::app::{App, ConnStatus, Hit, Level, ListId, PartnerState, Tab};
+use crate::keymap::Action;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    app.clear_hits();
     let area = frame.area();
     frame.render_widget(Block::new().style(app.theme.base()), area);
 
@@ -45,10 +47,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
 fn header(frame: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
+    // Messages waiting in chats you aren't looking at.
+    let unread: usize = app.unseen + app.others.iter().map(|s| s.unseen).sum::<usize>();
+    // Returns the line plus each tab's (offset, width) for click targets.
     let tabs = |short: bool| {
         let mut spans =
             vec![Span::styled(" yap", Style::new().fg(t.accent).add_modifier(Modifier::BOLD)), Span::raw("   ")];
+        let mut places = Vec::new();
         for (i, tab) in Tab::ALL.iter().enumerate() {
+            let start: usize = spans.iter().map(Span::width).sum();
             let title = if short { tab.short_title() } else { tab.title() }.to_lowercase();
             if *tab == app.tab {
                 spans.push(Span::styled(
@@ -59,9 +66,14 @@ fn header(frame: &mut Frame, app: &App, area: Rect) {
                 spans.push(Span::styled(format!("{} ", i + 1), t.muted().add_modifier(Modifier::DIM)));
                 spans.push(Span::styled(title, t.muted()));
             }
+            if *tab == Tab::Chat && unread > 0 {
+                spans.push(Span::styled(format!(" {unread}"), Style::new().fg(t.accent).add_modifier(Modifier::BOLD)));
+            }
+            let end: usize = spans.iter().map(Span::width).sum();
+            places.push((start as u16, (end - start) as u16, *tab));
             spans.push(Span::raw("  "));
         }
-        Line::from(spans)
+        (Line::from(spans), places)
     };
 
     let (dot, status) = match &app.status {
@@ -72,7 +84,13 @@ fn header(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("●", Style::new().fg(t.error)),
             format!("retry in {}s", at.saturating_duration_since(app.now).as_secs() + 1),
         ),
-        ConnStatus::Offline { .. } => (Span::styled("●", Style::new().fg(t.error)), "offline · ^R".to_owned()),
+        ConnStatus::Offline { .. } => (
+            Span::styled("●", Style::new().fg(t.error)),
+            match app.keymap.hint(Action::Reconnect) {
+                Some(k) => format!("offline · {k}"),
+                None => "offline".to_owned(),
+            },
+        ),
     };
     let users = app.users_online.map(|n| Span::styled(format!(" · {} online", thousands(n)), t.muted()));
     let partner = match &app.partner {
@@ -104,44 +122,57 @@ fn header(frame: &mut Frame, app: &App, area: Rect) {
     'fit: for short in [false, true] {
         for detail in (0..=3).rev() {
             let (l, r) = (tabs(short), status_line(detail));
-            if l.width() + r.width() <= area.width as usize {
+            if l.0.width() + r.width() <= area.width as usize {
                 chosen = (l, r);
                 break 'fit;
             }
         }
     }
-    let (left, right) = chosen;
+    let ((left, places), right) = chosen;
+    for (offset, width, tab) in places {
+        if offset + width <= area.width {
+            app.hit(Rect::new(area.x + offset, area.y, width, 1), Hit::Tab(tab));
+        }
+    }
     let right_w = (right.width() as u16).min(area.width);
     let [l, r] = Layout::horizontal([Constraint::Min(0), Constraint::Length(right_w)]).areas(area);
     frame.render_widget(Paragraph::new(left), l);
     frame.render_widget(Paragraph::new(right).right_aligned(), r);
 }
 
-/// Key hints for the footer: `(key, action)` pairs for the current context.
-pub fn hint_pairs(app: &App) -> Vec<(&'static str, &'static str)> {
+/// Key hints for the footer: `(key, action)` pairs for the current context. Global
+/// actions show whatever they're currently bound to, and are left out if unbound.
+pub fn hint_pairs(app: &App) -> Vec<(String, &'static str)> {
+    let bound = |actions: &[(Action, &'static str)]| -> Vec<(String, &'static str)> {
+        actions.iter().filter_map(|&(a, what)| app.keymap.hint(a).map(|k| (k, what))).collect()
+    };
+    let fixed = |pairs: &[(&'static str, &'static str)]| -> Vec<(String, &'static str)> {
+        pairs.iter().map(|&(k, what)| (k.to_owned(), what)).collect()
+    };
     use crate::app::{ChatFocus, PrefsPane};
     if app.viewer.is_some() {
-        return vec![("o", "open"), ("y", "copy"), ("s", "save"), ("any key", "close")];
+        return fixed(&[("o", "open"), ("y", "copy"), ("s", "save"), ("any key", "close")]);
     }
     if app.modal.is_some() {
-        return vec![("esc", "cancel")];
+        return fixed(&[("esc", "cancel")]);
     }
     match app.tab {
         Tab::Chat if app.chat_focus == ChatFocus::Drawer && app.drawer_panel => {
-            vec![("enter", "insert"), ("o", "open"), ("p", "preview"), ("y", "copy"), ("tab", "back")]
+            fixed(&[("enter", "insert"), ("o", "open"), ("p", "preview"), ("y", "copy"), ("tab", "back")])
         }
-        Tab::Chat => vec![
-            ("^F", "find"),
-            ("^D", "leave"),
-            ("^B", "block"),
-            ("^O", "links"),
-            ("^E", "drawer"),
-            ("^P", "profile"),
-            ("pgup", "scroll"),
-            ("F1", "help"),
-        ],
+        Tab::Chat => bound(&[
+            (Action::Find, "find"),
+            (Action::Next, "next"),
+            (Action::Leave, "leave"),
+            (Action::Block, "block"),
+            (Action::Links, "links"),
+            (Action::Drawer, "drawer"),
+            (Action::Snippets, "snippets"),
+            (Action::Editor, "editor"),
+            (Action::Help, "help"),
+        ]),
         Tab::Preferences => match app.prefs_ui.pane {
-            PrefsPane::Profiles => vec![
+            PrefsPane::Profiles => fixed(&[
                 ("enter", "use"),
                 ("n", "new"),
                 ("c", "copy"),
@@ -150,11 +181,26 @@ pub fn hint_pairs(app: &App) -> Vec<(&'static str, &'static str)> {
                 ("e/E", "export"),
                 ("i/I", "import"),
                 ("tab", "pane"),
-            ],
-            PrefsPane::Fields => vec![("enter", "edit"), ("x", "reset"), ("tab", "pane"), ("^F", "find partner")],
-            PrefsPane::Options => vec![("type", "filter"), ("enter/space", "toggle"), ("esc", "back")],
+            ]),
+            PrefsPane::Fields => {
+                let mut hints = fixed(&[("enter", "edit"), ("x", "reset"), ("tab", "pane")]);
+                hints.extend(bound(&[(Action::Find, "find partner")]));
+                hints
+            }
+            PrefsPane::Options => fixed(&[("type", "filter"), ("enter/space", "toggle"), ("esc", "back")]),
         },
-        Tab::Drawer => vec![
+        Tab::Drawer if app.drawer_ui.shelf == crate::app::Shelf::Snippets => fixed(&[
+            ("a", "add"),
+            ("enter", "insert"),
+            ("e", "edit"),
+            ("r", "rename"),
+            ("y", "copy"),
+            ("d", "delete"),
+            ("/", "search"),
+            ("s", "links"),
+            ("E/I", "export/import"),
+        ]),
+        Tab::Drawer => fixed(&[
             ("a", "add"),
             ("enter", "open"),
             ("i", "insert"),
@@ -165,10 +211,20 @@ pub fn hint_pairs(app: &App) -> Vec<(&'static str, &'static str)> {
             ("[ ]", "tag filter"),
             ("/", "search"),
             ("d", "delete"),
-        ],
-        Tab::Logs if app.logs_ui.reading => vec![("↑↓ pgup pgdn", "scroll"), ("g/G", "top/bottom"), ("esc", "back")],
-        Tab::Logs => vec![("enter", "read"), ("e", "export"), ("d", "delete"), ("/", "search")],
-        Tab::Traffic => vec![
+            ("s", "snippets"),
+        ]),
+        Tab::Logs if app.logs_ui.reading => {
+            fixed(&[("↑↓ pgup pgdn", "scroll"), ("g/G", "top/bottom"), ("esc", "back")])
+        }
+        Tab::Logs => fixed(&[
+            ("enter", "read"),
+            ("p", "pin"),
+            ("r", "rename"),
+            ("e", "export"),
+            ("d", "delete"),
+            ("/", "search everything"),
+        ]),
+        Tab::Traffic => fixed(&[
             ("f", "follow"),
             ("h", "heartbeats"),
             ("p", "pretty"),
@@ -177,8 +233,14 @@ pub fn hint_pairs(app: &App) -> Vec<(&'static str, &'static str)> {
             ("y", "copy"),
             ("e", "export"),
             ("c", "clear"),
-        ],
-        Tab::Settings => vec![("enter", "toggle/edit"), ("←/→", "change"), ("d", "remove domain")],
+        ]),
+        Tab::Settings => match crate::app::settings::rows(&app.config.settings).get(app.settings_ui.selected) {
+            Some(crate::app::settings::Row::Key(_)) => {
+                fixed(&[("enter", "rebind"), ("backspace", "default"), ("x", "unbind")])
+            }
+            Some(crate::app::settings::Row::Domain(_)) => fixed(&[("d", "remove domain")]),
+            _ => fixed(&[("enter", "toggle/edit"), ("←/→", "change")]),
+        },
     }
 }
 
@@ -298,6 +360,49 @@ pub fn section<'a>(frame: &mut Frame, app: &App, area: Rect, title: impl Into<Li
     let title: Line = title.into();
     frame.render_widget(Paragraph::new(title.style(style)), Rect::new(area.x, area.y, area.width, 1));
     Rect::new(area.x, area.y + 1, area.width, area.height - 1)
+}
+
+/// How a list is shown and what clicking its rows reports.
+pub struct Rows<'t> {
+    pub id: ListId,
+    pub selected: Option<usize>,
+    pub focused: bool,
+    /// Maps item positions to the index reported on click (`None` for rows like
+    /// section headers). Without it, item N reports N.
+    pub targets: Option<&'t [Option<usize>]>,
+}
+
+impl<'t> Rows<'t> {
+    pub fn new(id: ListId, selected: Option<usize>, focused: bool) -> Self {
+        Rows { id, selected, focused, targets: None }
+    }
+
+    pub fn targets(mut self, targets: &'t [Option<usize>]) -> Self {
+        self.targets = Some(targets);
+        self
+    }
+}
+
+/// Render a list and record a click target for each visible row.
+pub fn render_list(frame: &mut Frame, app: &App, area: Rect, items: Vec<ListItem<'_>>, rows: Rows<'_>) {
+    let heights: Vec<u16> = items.iter().map(|i| i.height() as u16).collect();
+    let mut state = ListState::default().with_selected(rows.selected);
+    frame.render_stateful_widget(list(app, items, rows.focused), area, &mut state);
+    let mut y = area.y;
+    for (i, &h) in heights.iter().enumerate().skip(state.offset()) {
+        if y >= area.bottom() {
+            break;
+        }
+        let h = h.min(area.bottom() - y);
+        let target = match rows.targets {
+            Some(t) => t.get(i).copied().flatten(),
+            None => Some(i),
+        };
+        if let Some(index) = target {
+            app.hit(Rect::new(area.x, y, area.width, h), Hit::Row { list: rows.id, index });
+        }
+        y += h;
+    }
 }
 
 /// A list styled the quiet way: a `›` pointer and accent text for the selection

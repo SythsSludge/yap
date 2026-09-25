@@ -1,14 +1,15 @@
 //! The raw websocket traffic viewer.
 
-use super::{columns, list, section};
+use super::{Rows, columns, render_list, section};
 use crate::app::App;
+use crate::app::ListId;
 use crate::text::truncate;
 use crate::traffic::{Direction, Entry, FrameKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{ListItem, Paragraph, Wrap};
 
 fn kib(bytes: u64) -> String {
     if bytes < 1024 { format!("{bytes} B") } else { format!("{:.1} KiB", bytes as f64 / 1024.0) }
@@ -94,8 +95,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     let selected = app.traffic_selected();
-    let mut state = ListState::default().with_selected(selected);
-    frame.render_stateful_widget(list(app, items, true), list_rect, &mut state);
+    render_list(frame, app, list_rect, items, Rows::new(ListId::Traffic, selected, true));
 
     let Some(entry) = selected.and_then(|i| visible.get(i)) else {
         let inner = section(frame, app, detail_area, "frame", false);

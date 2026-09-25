@@ -53,11 +53,45 @@ pub struct NotifySettings {
     pub desktop: bool,
     /// Also notify for each message, not only partner connect/leave.
     pub on_message: bool,
+    /// Play a sound with the notification.
+    pub sound: bool,
+    /// Shell command that plays the sound; empty picks a desktop default.
+    pub sound_command: String,
+    /// Words (e.g. your character's name) that always notify when a partner says them.
+    pub keywords: Vec<String>,
 }
 
 impl Default for NotifySettings {
     fn default() -> Self {
-        NotifySettings { bell: true, title: true, desktop: false, on_message: false }
+        NotifySettings {
+            bell: true,
+            title: true,
+            desktop: false,
+            on_message: false,
+            sound: false,
+            sound_command: String::new(),
+            keywords: Vec::new(),
+        }
+    }
+}
+
+/// Client-side rules for skipping a match the server made.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SkipSettings {
+    pub enabled: bool,
+    /// Skip partners sharing fewer kinks than this (0 turns the rule off). Partners or
+    /// profiles set to "Any / All" always pass.
+    pub min_shared_kinks: u8,
+    /// Skip partners whose stated language differs from yours.
+    pub language_mismatch: bool,
+    /// Stop auto-skipping after this many in a row, so a strict rule can't spin forever.
+    pub max_in_a_row: u32,
+}
+
+impl Default for SkipSettings {
+    fn default() -> Self {
+        SkipSettings { enabled: true, min_shared_kinks: 0, language_mismatch: false, max_in_a_row: 20 }
     }
 }
 
@@ -124,9 +158,21 @@ pub struct Settings {
     pub auto_reconnect: bool,
     /// Ask before leaving, blocking or re-rolling a partner.
     pub confirm_actions: bool,
+    /// Search again automatically after a partner leaves.
+    pub auto_requeue: bool,
+    pub requeue_delay_secs: u64,
+    pub skip: SkipSettings,
+    /// Command for the external editor; empty means `$VISUAL`, then `$EDITOR`, then `vi`.
+    pub editor: String,
+    /// The site only takes single-line messages, so paragraphs written in the editor
+    /// are joined with this.
+    pub paragraph_break: String,
     pub notify: NotifySettings,
     pub images: ImageSettings,
     pub traffic: TrafficSettings,
+    /// Key rebindings; only changes from the defaults. See `keymap.rs`.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub keys: crate::keymap::Overrides,
 }
 
 impl Default for Settings {
@@ -143,9 +189,15 @@ impl Default for Settings {
             show_sidebar: true,
             auto_reconnect: true,
             confirm_actions: true,
+            auto_requeue: false,
+            requeue_delay_secs: 3,
+            skip: SkipSettings::default(),
+            editor: String::new(),
+            paragraph_break: " / ".into(),
             notify: NotifySettings::default(),
             images: ImageSettings::default(),
             traffic: TrafficSettings::default(),
+            keys: crate::keymap::Overrides::new(),
         }
     }
 }
@@ -214,6 +266,7 @@ impl Config {
         if self.find(&self.active_profile).is_none() {
             self.active_profile = self.profiles[0].name.clone();
         }
+        warnings.extend(crate::keymap::Keymap::build(&self.settings.keys).1);
         let domains = std::mem::take(&mut self.settings.images.trusted_domains);
         for d in domains {
             match crate::links::normalize_domain(&d) {
@@ -454,6 +507,8 @@ pub struct Paths {
     pub themes_dir: PathBuf,
     pub drawer_file: PathBuf,
     pub logs_dir: PathBuf,
+    /// Where "save image" puts files.
+    pub downloads_dir: PathBuf,
     pub data_dir: PathBuf,
 }
 
@@ -467,6 +522,10 @@ impl Paths {
             themes_dir: dirs.config_dir().join("themes"),
             drawer_file: dirs.data_dir().join("drawer.toml"),
             logs_dir: dirs.data_dir().join("logs"),
+            downloads_dir: directories::UserDirs::new()
+                .and_then(|d| d.download_dir().map(Path::to_path_buf))
+                .or_else(|| directories::BaseDirs::new().map(|d| d.home_dir().join("Downloads")))
+                .unwrap_or_else(|| PathBuf::from(".")),
             data_dir: dirs.data_dir().to_owned(),
             config_file,
         })
@@ -479,6 +538,7 @@ impl Paths {
             themes_dir: dir.join("themes"),
             drawer_file: dir.join("drawer.toml"),
             logs_dir: dir.join("logs"),
+            downloads_dir: dir.join("downloads"),
             data_dir: dir.to_owned(),
         }
     }
