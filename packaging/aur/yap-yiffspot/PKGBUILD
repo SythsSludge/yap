@@ -16,7 +16,7 @@ optdepends=('hunspell-en_gb: British English spellcheck (or any other hunspell d
 # Other packages that install a `yap` command.
 conflicts=('yap' 'yap-bin' 'yap-git' 'yap-yiffspot-git')
 source=("$_name-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('7d0e3da1d2579c57a5f47269af0fa043eb742381c4a855bb5bf4393b8570cab9')
 
 prepare() {
   cd "$_name-$pkgver"

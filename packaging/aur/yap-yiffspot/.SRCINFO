@@ -17,6 +17,6 @@ pkgbase = yap-yiffspot
 	conflicts = yap-yiffspot-git
 	options = !lto
 	source = yap-0.1.0.tar.gz::https://github.com/SythsSludge/yap/archive/refs/tags/v0.1.0.tar.gz
-	sha256sums = SKIP
+	sha256sums = 7d0e3da1d2579c57a5f47269af0fa043eb742381c4a855bb5bf4393b8570cab9
 
 pkgname = yap-yiffspot
