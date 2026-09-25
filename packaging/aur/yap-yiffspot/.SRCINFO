@@ -1,6 +1,6 @@
 pkgbase = yap-yiffspot
 	pkgdesc = Terminal client for YiffSpot, the anonymous furry roleplay chat (18+)
-	pkgver = 0.1.0
+	pkgver = 0.1.1
 	pkgrel = 1
 	url = https://github.com/SythsSludge/yap
 	arch = x86_64
@@ -16,7 +16,7 @@ pkgbase = yap-yiffspot
 	conflicts = yap-git
 	conflicts = yap-yiffspot-git
 	options = !lto
-	source = yap-0.1.0.tar.gz::https://github.com/SythsSludge/yap/archive/refs/tags/v0.1.0.tar.gz
-	sha256sums = 7d0e3da1d2579c57a5f47269af0fa043eb742381c4a855bb5bf4393b8570cab9
+	source = yap-0.1.1.tar.gz::https://github.com/SythsSludge/yap/archive/refs/tags/v0.1.1.tar.gz
+	sha256sums = d5d694daaff3cdb55ce823b48926da615777d802a1b688519073e781aaa0fcef
 
 pkgname = yap-yiffspot
