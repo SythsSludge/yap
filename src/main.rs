@@ -113,6 +113,7 @@ fn main() -> Result<()> {
             println!("themes  {}", paths.themes_dir.display());
             println!("drawer  {}", paths.drawer_file.display());
             println!("logs    {}", paths.logs_dir.display());
+            println!("history {}", paths.history_file.display());
             println!("images  {}", paths.downloads_dir.display());
             return Ok(());
         }
@@ -128,6 +129,7 @@ fn main() -> Result<()> {
     let drawer = Drawer::load(&paths.drawer_file)?;
     let (logs, log_warnings) = yap::logs::Logs::load_dir(&paths.logs_dir);
     let stats = yap::stats::Stats::load(&paths.stats_file);
+    let (history, history_warnings) = yap::history::History::load(&paths.history_file);
     let (themes, theme_errors) = yap::theme::load_all(Some(&paths.themes_dir));
     if let Some(name) = &cli.theme
         && !themes.iter().any(|t| &t.name == name)
@@ -167,6 +169,8 @@ fn main() -> Result<()> {
         };
         let mut app = App::new(paths, config, drawer, themes, picker);
         app.logs = logs;
+        app.history = history;
+        app.load_speller();
         match stats {
             Ok(stats) => app.stats = stats,
             Err(e) => app.toast(yap::app::Level::Warning, format!("{e:#}; starting fresh stats")),
@@ -178,7 +182,7 @@ fn main() -> Result<()> {
         if let Some(file) = traffic_sink {
             app.traffic = TrafficLog::new(app.config.settings.traffic.capacity).with_sink(Box::new(file));
         }
-        for w in warnings.into_iter().chain(theme_errors).chain(log_warnings) {
+        for w in warnings.into_iter().chain(theme_errors).chain(log_warnings).chain(history_warnings) {
             app.toast(yap::app::Level::Warning, w);
         }
         runtime.block_on(yap::runtime::run(&mut terminal, app, mouse))

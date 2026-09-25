@@ -61,6 +61,8 @@ pub enum Command {
     Select,
     /// Show chat statistics.
     Stats,
+    /// Show partner history.
+    History,
     /// Show the partner's kinks with definitions.
     Kinks,
     DrawerExport(String),
@@ -102,6 +104,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("/search [text]", "search this chat"),
     ("/select", "select a message to quote, copy or save"),
     ("/stats", "partners met, time chatting and more"),
+    ("/history", "everyone you've met, how it went, and patterns"),
     ("/kinks", "your partner's kinks next to yours, with what each means"),
     ("/logs", "browse earlier chats"),
     ("/drawer", "toggle the drawer"),
@@ -172,6 +175,7 @@ pub fn parse(input: &str) -> Parsed {
         "search" | "grep" => Parsed::Command(Command::Search(opt())),
         "select" | "quote" => Parsed::Command(Command::Select),
         "stats" => Parsed::Command(Command::Stats),
+        "history" => Parsed::Command(Command::History),
         "kinks" | "define" => Parsed::Command(Command::Kinks),
         "drawer-export" => need("a file path", Command::DrawerExport),
         "drawer-import" => need("a file path", Command::DrawerImport),
@@ -183,7 +187,7 @@ pub fn parse(input: &str) -> Parsed {
         "quit" | "exit" | "q" => Parsed::Command(Command::Quit),
         "links" => Parsed::Command(Command::Links),
         "drawer" => Parsed::Command(Command::Drawer),
-        "logs" | "history" => Parsed::Command(Command::Logs),
+        "logs" => Parsed::Command(Command::Logs),
         "profile" | "p" => Parsed::Command(Command::Profile(opt())),
         "theme" => Parsed::Command(Command::Theme(opt())),
         "save" => match arg.split_once(char::is_whitespace) {

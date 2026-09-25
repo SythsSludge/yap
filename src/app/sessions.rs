@@ -31,10 +31,13 @@ pub struct Session {
     /// What you've called the current partner (`/nick`).
     pub partner_nick: Option<String>,
     pub clock: Clock,
+    /// The preference profile this chat uses. For the visible chat it lives in
+    /// `config.active_profile`.
+    pub profile: String,
 }
 
 impl Session {
-    pub fn new(id: u64) -> Self {
+    pub fn new(id: u64, profile: String) -> Self {
         Session {
             id,
             status: ConnStatus::Idle,
@@ -52,6 +55,7 @@ impl Session {
             skips: 0,
             partner_nick: None,
             clock: Clock::default(),
+            profile,
         }
     }
 }
@@ -66,6 +70,7 @@ pub struct SessionSummary {
     pub label: String,
     pub unseen: usize,
     pub online: bool,
+    pub profile: String,
 }
 
 fn describe(status: &ConnStatus, partner: &PartnerState, nick: Option<&str>) -> String {
@@ -99,6 +104,7 @@ impl App {
             skips,
             partner_nick,
             clock,
+            profile,
         } = other;
         std::mem::swap(&mut self.session_id, id);
         std::mem::swap(&mut self.status, status);
@@ -116,6 +122,7 @@ impl App {
         std::mem::swap(&mut self.skips, skips);
         std::mem::swap(&mut self.partner_nick, partner_nick);
         std::mem::swap(&mut self.clock, clock);
+        std::mem::swap(&mut self.config.active_profile, profile);
     }
 
     /// Run `f` with session `id` swapped in as the current one. Returns `None` if there's
@@ -172,6 +179,7 @@ impl App {
                 label: describe(&s.status, &s.partner, s.partner_nick.as_deref()),
                 unseen: s.unseen,
                 online: s.status == ConnStatus::Online,
+                profile: s.profile.clone(),
             })
             .chain([SessionSummary {
                 id: self.session_id,
@@ -180,6 +188,7 @@ impl App {
                 label: describe(&self.status, &self.partner, self.partner_nick.as_deref()),
                 unseen: self.unseen,
                 online: self.is_online(),
+                profile: self.config.active_profile.clone(),
             }])
             .collect();
         all.sort_by_key(|s| s.id);
@@ -221,7 +230,7 @@ impl App {
 
     /// Open another chat with its own connection and switch to it.
     pub fn new_session(&mut self) {
-        let mut fresh = Session::new(self.next_session);
+        let mut fresh = Session::new(self.next_session, self.config.active_profile.clone());
         self.next_session += 1;
         self.exchange(&mut fresh);
         self.others.push(fresh);
@@ -249,7 +258,7 @@ impl App {
         }
         self.closing = true;
         self.effect(Effect::CloseSocket);
-        self.end_conversation();
+        self.end_conversation(Outcome::YouLeft);
         let number = self.session_number();
         // Bring the nearest other session forward; the closed one is dropped.
         let index = self.others.iter().rposition(|s| s.id < self.session_id).unwrap_or(0);
@@ -258,6 +267,27 @@ impl App {
         drop(next);
         self.unseen = 0;
         self.toast(Level::Info, format!("Closed chat {number}."));
+    }
+
+    /// Keep parked chats pointing at real profiles after one is renamed (`from`, `to`)
+    /// or deleted.
+    pub(super) fn sync_session_profiles(&mut self, renamed: Option<(&str, &str)>) {
+        let fallback = self.config.active_profile.clone();
+        for s in self.others.iter_mut().chain(&mut self.displaced) {
+            if let Some((from, to)) = renamed
+                && s.profile == from
+            {
+                s.profile = to.to_owned();
+            }
+            if !self.config.profiles.iter().any(|p| p.name == s.profile) {
+                s.profile = fallback.clone();
+            }
+        }
+    }
+
+    /// Whether several chats use different profiles (so the tabs should say which).
+    pub fn mixed_profiles(&self) -> bool {
+        self.others.iter().any(|s| s.profile != self.config.active_profile)
     }
 
     /// Whether any session has a partner (used before quitting).
@@ -276,6 +306,9 @@ impl App {
     pub fn mark_seen(&mut self) {
         if self.tab == Tab::Chat {
             self.unseen = 0;
+            if self.focused && self.chat.is_following() {
+                self.chat.new_read = true;
+            }
         }
     }
 }

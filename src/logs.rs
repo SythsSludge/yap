@@ -419,7 +419,7 @@ fn create_private_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn open_private(path: &Path) -> Result<std::fs::File> {
+pub(crate) fn open_private(path: &Path) -> Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.create(true).append(true);
     #[cfg(unix)]

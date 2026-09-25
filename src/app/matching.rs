@@ -2,6 +2,7 @@
 //! client-side skip rules the server doesn't know about.
 
 use super::*;
+use crate::history::SkipRule;
 
 impl App {
     /// Skip straight to someone new. Unlike Find, this never asks: that's the point.
@@ -50,7 +51,7 @@ impl App {
     }
 
     /// Why this partner breaks the user's skip rules, if they do.
-    pub fn skip_reason(&self, info: &PartnerInfo) -> Option<String> {
+    pub fn skip_reason(&self, info: &PartnerInfo) -> Option<(SkipRule, String)> {
         let rules = &self.config.settings.skip;
         if !rules.enabled {
             return None;
@@ -58,14 +59,14 @@ impl App {
         let prefs = &self.config.active().preferences;
         let theirs = info.kink_list();
         if let Some(limit) = theirs.iter().find(|k| prefs.limits.iter().any(|l| l == *k)) {
-            return Some(format!("they're into {limit}, one of your limits"));
+            return Some((SkipRule::Limit, format!("they're into {limit}, one of your limits")));
         }
         let open_ended = theirs.contains(&ANY) || prefs.kinks.iter().all(|k| k == ANY);
         if rules.min_shared_kinks > 0 && !open_ended {
             let shared = theirs.iter().filter(|k| prefs.kinks.iter().any(|m| m == *k)).count();
             if shared < rules.min_shared_kinks as usize {
                 let noun = if shared == 1 { "kink" } else { "kinks" };
-                return Some(format!("only {shared} shared {noun}"));
+                return Some((SkipRule::SharedKinks, format!("only {shared} shared {noun}")));
             }
         }
         if rules.language_mismatch
@@ -74,14 +75,14 @@ impl App {
             && prefs.language != ANY
             && *lang != prefs.language
         {
-            return Some(format!("they chose {lang}"));
+            return Some((SkipRule::Language, format!("they chose {lang}")));
         }
         None
     }
 
     /// Apply the skip rules to a new match. Returns true if they were skipped.
     pub(super) fn auto_skip(&mut self, info: &PartnerInfo) -> bool {
-        let Some(reason) = self.skip_reason(info) else {
+        let Some((rule, reason)) = self.skip_reason(info) else {
             self.skips = 0;
             return false;
         };
@@ -96,6 +97,10 @@ impl App {
         }
         self.skips += 1;
         self.count(|s| s.skipped += 1);
+        let mut record = crate::history::Record::new(Local::now(), info, Outcome::Skipped);
+        record.skip = Some(rule);
+        record.profile = self.config.active_profile.clone();
+        self.remember(record);
         let who = format!("{} {} {}", info.role, info.gender, info.species);
         self.system(format!("Skipped a {who}: {reason}."));
         // Still waiting from the server's point of view, so just ask again.

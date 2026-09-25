@@ -113,3 +113,44 @@ fn kinks_popup_opens_from_command_key_and_sidebar() {
     click_on(&mut h, &Hit::Kinks);
     assert!(matches!(h.modal, Some(Modal::Kinks { .. })));
 }
+
+#[test]
+fn history_records_how_each_partner_went() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.server(ServerMessage::ReceiveMessage("hi".into()));
+    h.type_str("hey");
+    h.press(KeyCode::Enter);
+    h.server(ServerMessage::PartnerLeft);
+    let r = h.history.records.last().unwrap().clone();
+    assert_eq!(r.outcome, crate::history::Outcome::TheyLeft);
+    assert_eq!((r.sent, r.received, r.shared_kinks), (1, 1, 2));
+    assert_eq!(r.partner(), "Dominant Female Fox");
+    assert_eq!(r.profile, "default");
+
+    // Re-rolling counts as you leaving; an auto-skip says which rule.
+    let mut h = h.partnered();
+    h.ctrl('n');
+    assert_eq!(h.history.records.last().unwrap().outcome, crate::history::Outcome::YouLeft);
+    h.config.active_mut().preferences.toggle(Field::Limits, "Scat");
+    connected_to(&mut h, "Scat", None);
+    let r = h.history.records.last().unwrap();
+    assert_eq!((r.outcome, r.skip), (crate::history::Outcome::Skipped, Some(crate::history::SkipRule::Limit)));
+    assert_eq!(h.history.records.len(), 3);
+
+    // Saved on flush, and the popup opens from /history or h in /stats.
+    h.flush();
+    assert_eq!(std::fs::read_to_string(&h.paths.history_file).unwrap().lines().count(), 3);
+    h.run_command(Command::Stats);
+    h.press(KeyCode::Char('h'));
+    assert!(matches!(h.modal, Some(Modal::History { scroll: 0 })));
+    h.press(KeyCode::Char('x'));
+    h.press(KeyCode::Char('y'));
+    assert!(h.history.records.is_empty());
+    assert!(!h.paths.history_file.exists());
+
+    // Turned off, nothing is kept.
+    h.config.settings.keep_history = false;
+    let mut h = h.partnered();
+    h.server(ServerMessage::PartnerLeft);
+    assert!(h.history.records.is_empty());
+}

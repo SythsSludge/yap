@@ -32,6 +32,7 @@ impl App {
             }
             Confirm::DeleteProfile(name) => match self.config.delete_profile(&name) {
                 Ok(()) => {
+                    self.sync_session_profiles(None);
                     self.prefs_ui.profile = self.prefs_ui.profile.min(self.config.profiles.len() - 1);
                     self.config_changed();
                     self.toast(Level::Info, format!("Deleted profile `{name}`."));
@@ -51,6 +52,10 @@ impl App {
                     self.toast(Level::Info, format!("Deleted chat with {}.", conv.title()));
                 }
                 Err(e) => self.toast(Level::Error, format!("{e:#}")),
+            },
+            Confirm::ClearHistory => match self.history.clear(&self.paths.history_file) {
+                Ok(()) => self.toast(Level::Info, "Partner history cleared."),
+                Err(e) => self.toast(Level::Error, format!("Couldn't clear history: {e:#}")),
             },
             Confirm::LoadUntrusted(url) => {
                 let host = url::Url::parse(&url).ok().and_then(|u| u.host_str().map(str::to_owned));
@@ -96,7 +101,7 @@ impl App {
         }
         if had_partner {
             self.system("You have disconnected from your previous partner.");
-            self.end_conversation();
+            self.end_conversation(Outcome::YouLeft);
         }
         self.reset_partner();
         self.can_block_previous = had_partner;
@@ -173,6 +178,7 @@ impl App {
         self.input.submit();
         self.request_images(&text);
         self.push(EntryKind::You(text));
+        self.chat.new_from = None;
         self.chat.follow();
     }
 
@@ -267,6 +273,7 @@ impl App {
             Command::Search(query) => self.start_search(query.as_deref()),
             Command::Select => self.select_message(None),
             Command::Stats => self.modal = Some(Modal::Stats),
+            Command::History => self.modal = Some(Modal::History { scroll: 0 }),
             Command::Kinks => self.open_kinks(),
             Command::DrawerExport(path) => self.export_drawer(&path),
             Command::DrawerImport(path) => self.import_drawer(&path),

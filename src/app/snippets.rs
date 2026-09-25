@@ -28,14 +28,47 @@ impl App {
         vars
     }
 
-    /// Put a snippet into the message box, placeholders filled in.
-    pub fn insert_snippet(&mut self, index: usize) {
-        let Some(snippet) = self.drawer.snippets.get(index) else { return };
-        let text = crate::app::join_paragraphs(
+    /// A snippet's text as it would be sent: placeholders filled, paragraphs joined.
+    pub fn filled_snippet(&self, index: usize) -> Option<String> {
+        let snippet = self.drawer.snippets.get(index)?;
+        Some(crate::app::join_paragraphs(
             &expand_placeholders(&snippet.text, &self.snippet_vars()),
             &self.config.settings.paragraph_break,
-        );
+        ))
+    }
+
+    /// Put a snippet into the message box, placeholders filled in.
+    pub fn insert_snippet(&mut self, index: usize) {
+        let Some(text) = self.filled_snippet(index) else { return };
         self.insert_into_input(&text);
+    }
+
+    /// Snippets matching a `;name` trigger being typed at the cursor: where the `;` is,
+    /// then snippet indices (names starting with it first).
+    pub fn snippet_suggestions(&self) -> Option<(usize, Vec<usize>)> {
+        let text = self.input.text();
+        let before = &text[..self.input.cursor()];
+        let open = before.rfind(';')?;
+        let typed = before[open + 1..].to_lowercase();
+        let starts_word = before[..open].chars().next_back().is_none_or(char::is_whitespace);
+        let name_like = typed.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_');
+        if !starts_word || typed.is_empty() || !name_like {
+            return None;
+        }
+        let names = &self.drawer.snippets;
+        let starts = (0..names.len()).filter(|&i| names[i].name.starts_with(&typed));
+        let contains =
+            (0..names.len()).filter(|&i| !names[i].name.starts_with(&typed) && names[i].name.contains(&typed));
+        let found: Vec<usize> = starts.chain(contains).take(6).collect();
+        (!found.is_empty()).then_some((open, found))
+    }
+
+    /// Tab after `;intro`: swap the trigger for the snippet's text.
+    pub(super) fn complete_snippet(&mut self) -> bool {
+        let Some((start, found)) = self.snippet_suggestions() else { return false };
+        let Some(text) = self.filled_snippet(found[0]) else { return false };
+        self.input.replace_to_cursor(start, &text);
+        true
     }
 
     pub fn insert_snippet_named(&mut self, name: &str) {

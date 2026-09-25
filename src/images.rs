@@ -245,11 +245,27 @@ impl std::fmt::Debug for ImageState {
 pub struct Viewer {
     pub url: String,
     pub protocol: Option<StatefulProtocol>,
+    /// Why there's no picture (yet), when it isn't just loading.
+    pub note: Option<ViewerNote>,
+}
+
+/// Something the viewer shows instead of the picture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ViewerNote {
+    /// Loading from this host would reveal your IP, so it waits for a yes.
+    Untrusted {
+        host: String,
+    },
+    Failed(String),
 }
 
 impl std::fmt::Debug for Viewer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Viewer").field("url", &self.url).field("ready", &self.protocol.is_some()).finish()
+        f.debug_struct("Viewer")
+            .field("url", &self.url)
+            .field("ready", &self.protocol.is_some())
+            .field("note", &self.note)
+            .finish()
     }
 }
 

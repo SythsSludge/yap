@@ -157,3 +157,22 @@ fn drawer_export_and_import() {
     assert_eq!(other.last_toast(), Some("Imported 1 links and 1 snippets"));
     assert_eq!(other.drawer.items[0].tags, vec!["ref"]);
 }
+
+#[test]
+fn snippet_triggers_expand_with_tab() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.add_snippet("intro", "Hi! I'm a {species}.");
+    h.add_snippet("outro", "Take care!");
+    h.type_str("hey ;in");
+    let (_, found) = h.snippet_suggestions().unwrap();
+    assert_eq!(h.drawer.snippets[found[0]].name, "intro");
+    h.press(KeyCode::Tab);
+    assert_eq!(h.input.text(), "hey Hi! I'm a Wolf.");
+
+    // Not a trigger mid-word, for winks, or for names that don't exist.
+    for text in ["a;in", ";)", ";zzz"] {
+        h.input.clear();
+        h.type_str(text);
+        assert!(h.snippet_suggestions().is_none(), "{text}");
+    }
+}

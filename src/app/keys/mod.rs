@@ -130,6 +130,9 @@ impl App {
             }
             _ => return,
         };
+        if self.viewer.is_some() && self.modal.is_none() {
+            return self.viewer_step(delta.signum());
+        }
         if self.modal.is_some() || self.viewer.is_some() {
             return;
         }
@@ -217,6 +220,7 @@ impl App {
             Action::SelectMessage => self.select_message(None),
             Action::SearchChat => self.start_search(None),
             Action::Kinks => self.open_kinks(),
+            Action::Spelling => self.open_spelling(),
             Action::Leave => self.request_leave(),
             Action::Block => self.request_block(),
             Action::Links => self.open_links(),
@@ -278,7 +282,7 @@ impl App {
                 }
                 return;
             }
-            KeyCode::Tab if self.complete_command() || self.complete_emoji() => {
+            KeyCode::Tab if self.complete_command() || self.complete_snippet() || self.complete_emoji() => {
                 self.input_changed();
                 return;
             }

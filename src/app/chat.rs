@@ -110,6 +110,10 @@ pub struct Chat {
     /// Your messages (entry indices) sent so close to the partner leaving that they
     /// may never have arrived.
     pub unsure: Vec<usize>,
+    /// Where the messages you haven't seen start, for the "new" divider.
+    pub new_from: Option<usize>,
+    /// The divider has been on screen, so the next unseen message moves it.
+    pub new_read: bool,
 }
 
 impl Chat {
@@ -123,8 +127,28 @@ impl Chat {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.unsure.clear();
+        self.new_from = None;
         self.mode = ChatMode::Normal;
         self.follow();
+    }
+
+    /// Average words per message from the partner and from you, since the current
+    /// partner was introduced.
+    pub fn average_words(&self) -> (Option<usize>, Option<usize>) {
+        let start = self.entries.iter().rposition(|e| matches!(e.kind, EntryKind::PartnerInfo { .. })).unwrap_or(0);
+        let average = |mine: bool| {
+            let counts: Vec<usize> = self.entries[start..]
+                .iter()
+                .filter_map(|e| match &e.kind {
+                    EntryKind::You(t) if mine => Some(t),
+                    EntryKind::Partner(t) if !mine => Some(t),
+                    _ => None,
+                })
+                .map(|t| word_count(t))
+                .collect();
+            (!counts.is_empty()).then(|| (counts.iter().sum::<usize>() as f64 / counts.len() as f64).round() as usize)
+        };
+        (average(false), average(true))
     }
 
     /// Entries that are messages (as opposed to status lines).
@@ -216,6 +240,11 @@ impl Chat {
         }
         out
     }
+}
+
+/// Words in a message, ignoring stray punctuation like a lone `-` or `*`.
+pub fn word_count(text: &str) -> usize {
+    text.split_whitespace().filter(|w| w.chars().any(char::is_alphanumeric)).count()
 }
 
 /// The web client's partner description sentence.

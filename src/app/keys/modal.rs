@@ -1,11 +1,21 @@
 //! Keys for popups: the image viewer, confirmations, prompts and pickers.
 
 use super::*;
+use crate::images::{Viewer, ViewerNote};
 
 impl App {
     pub(super) fn viewer_key(&mut self, key: KeyEvent) {
         let url = self.viewer.as_ref().map(|v| v.url.clone()).unwrap_or_default();
+        let untrusted = matches!(self.viewer, Some(Viewer { note: Some(ViewerNote::Untrusted { .. }), .. }));
         match key.code {
+            KeyCode::Left | KeyCode::Up | KeyCode::Char('h' | 'k') | KeyCode::PageUp | KeyCode::BackTab => {
+                self.viewer_step(-1)
+            }
+            KeyCode::Right | KeyCode::Down | KeyCode::Char('l' | 'j' | ' ') | KeyCode::PageDown | KeyCode::Tab => {
+                self.viewer_step(1)
+            }
+            KeyCode::Enter if untrusted => self.viewer_load_once(),
+            KeyCode::Char('t') if untrusted => self.viewer_trust(),
             KeyCode::Char('o') => self.open_url(&url),
             KeyCode::Char('y') => self.copy(&url),
             KeyCode::Char('s') => {
@@ -118,7 +128,37 @@ impl App {
                     None
                 }
             }
-            Modal::Stats => None,
+            Modal::Spelling { word, start, end, suggestions, mut selected } => {
+                // The suggestions, then "add to dictionary".
+                let rows = suggestions.len() + 1;
+                if navigate(&mut selected, rows, &key, 5) {
+                    Some(Modal::Spelling { word, start, end, suggestions, selected })
+                } else {
+                    if key.code == KeyCode::Enter {
+                        self.apply_spelling(&word, start, end, suggestions.get(selected).map(String::as_str));
+                    }
+                    None
+                }
+            }
+            Modal::Stats => match key.code {
+                KeyCode::Char('h') => Some(Modal::History { scroll: 0 }),
+                _ => None,
+            },
+            Modal::History { scroll } => match key.code {
+                KeyCode::Up | KeyCode::Char('k') => Some(Modal::History { scroll: scroll.saturating_sub(1) }),
+                KeyCode::Down | KeyCode::Char('j') => Some(Modal::History { scroll: scroll.saturating_add(1) }),
+                KeyCode::PageUp => Some(Modal::History { scroll: scroll.saturating_sub(10) }),
+                KeyCode::PageDown | KeyCode::Char(' ') => Some(Modal::History { scroll: scroll.saturating_add(10) }),
+                KeyCode::Home | KeyCode::Char('g') => Some(Modal::History { scroll: 0 }),
+                KeyCode::Char('x') => {
+                    self.modal = Some(Modal::Confirm {
+                        text: "Forget your whole partner history? Stats and chat logs aren't affected.".into(),
+                        action: Confirm::ClearHistory,
+                    });
+                    return;
+                }
+                _ => None,
+            },
             Modal::Kinks { scroll } => match key.code {
                 KeyCode::Up | KeyCode::Char('k') => Some(Modal::Kinks { scroll: scroll.saturating_sub(1) }),
                 KeyCode::Down | KeyCode::Char('j') => Some(Modal::Kinks { scroll: scroll.saturating_add(1) }),
@@ -232,7 +272,10 @@ impl App {
                 }
             }
             PromptAction::RenameProfile(from) => match self.config.rename_profile(&from, &text) {
-                Ok(()) => self.config_changed(),
+                Ok(()) => {
+                    self.sync_session_profiles(Some((&from, text.trim())));
+                    self.config_changed();
+                }
                 Err(e) => self.toast(Level::Error, e.to_string()),
             },
             PromptAction::ExportProfile(name) => self.export(Some(&name), &text),

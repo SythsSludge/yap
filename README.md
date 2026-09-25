@@ -21,9 +21,12 @@ indicator, block, disconnect, themes, notifications), plus the following:
   app but looking elsewhere, you get a toast instead.
 - **Several chats at once**: `alt+n` opens another chat (its own connection, so the server
   sees a separate person, just like a second browser tab). Chats show as tabs above the
-  transcript with unread counts; `ctrl+pgup`/`ctrl+pgdn` or a click switches.
+  transcript with unread counts; `ctrl+pgup`/`ctrl+pgdn` or a click switches. Each chat
+  has its own profile: switch profile (`Ctrl-P`) in one tab and the others keep theirs,
+  including when they search again in the background.
 - **Snippets**: saved text (your intro, your limits, a polite goodbye) inserted with `^G`
-  or `/snip <name>`. `{species}`, `{partner_species}` and friends are filled in.
+  or `/snip <name>`, or type `;intro` and press `Tab`. `{species}`, `{partner_species}`
+  and friends are filled in.
 - **Fast re-rolls**: `^N` skips to a new partner without asking, and an optional
   auto-requeue searches again a few seconds after a partner leaves.
 - **Auto-skip rules**: limits per profile (kinks you never want), a minimum number of
@@ -47,6 +50,20 @@ indicator, block, disconnect, themes, notifications), plus the following:
 - **Partner timers**: the sidebar shows how long you've been chatting, when your partner
   last said something (in amber after five quiet minutes), how long they've been typing,
   and how long you've been searching. Shared kinks are listed first.
+- **Post length**: the sidebar compares your partner's average words per message with
+  yours, and the message box counts words as you type.
+- **"New" divider**: messages that arrived while you were in another tab, window or chat
+  sit under a *new* line until you reply.
+- **Partner history**: `/history` (or `h` in `/stats`) lists everyone you've met: who they
+  were, how long it lasted, who spoke how much, and how it ended. Patterns sit on top:
+  how chats tend to end, which species you meet most and for how long, whether shared
+  kinks mean longer chats, and which auto-skip rule fires most. Only these facts are
+  kept, never messages. Turn it off in *Settings → Keep partner history*; `x` in the list
+  forgets it.
+- **Spellcheck**: misspelled words are underlined as you type; `alt+s` offers fixes or adds
+  the word to your dictionary. Species, kink names and your characters' names are
+  known already. yap uses a system Hunspell dictionary if you have one
+  (`spell_language` in `config.toml`, e.g. `en_GB`), else its built-in US English one.
 - **Lost message warnings**: the server silently drops messages to a partner who has
   already gone. Anything you sent in the two seconds before they left is marked *may
   not have arrived*, so you know to copy it before starting over.
@@ -55,6 +72,8 @@ indicator, block, disconnect, themes, notifications), plus the following:
   off in *Settings → Emoji shortcodes*.
 - **Stats**: `/stats` shows partners met, auto-skips, messages and time chatting, for
   this session and all time. Kept locally.
+- **Image viewer**: `←`/`→` step through every image in the chat, with where it came
+  from, its size and a button row along the bottom. Untrusted hosts ask right there.
 - **Mouse**: click tabs, chats, list rows (double-click to activate), messages to open
   their links, and inline images to preview them. The image viewer has buttons to open,
   copy the link, save to the drawer, or save the image file to your Downloads.
@@ -103,6 +122,7 @@ keypress (a ratatui-image limitation). Turning off *Settings → Image previews*
 | `Alt-M` | select a message (quote, copy, save) |
 | `Alt-/` | search this chat |
 | `Alt-K` | your partner's kinks next to yours, explained |
+| `Alt-S` | fix the misspelled word at the cursor |
 | `Alt-N` / `Alt-W` | open / close a chat |
 | `Ctrl-PgUp` / `Ctrl-PgDn` | previous / next chat |
 | `Ctrl-D` | leave partner; while searching, stop searching |
@@ -150,6 +170,8 @@ literal `/`. While you type a command, matching ones are listed above the input,
 - `~/.local/share/yap/drawer.toml`: the drawer.
 - `~/Downloads` (or your XDG download folder): images saved from the viewer.
 - `~/.local/share/yap/stats.toml`: your chat statistics.
+- `~/.local/share/yap/history.jsonl`: partner history (private, 0600).
+- `~/.config/yap/dictionaries/<lang>.aff` / `.dic`: extra spellcheck dictionaries.
 - `~/.local/share/yap/logs/*.jsonl`: chat logs, one file per partner, only when *Save chat
   logs to disk* is on. The folder is private (0700) and the files are 0600. Deleting a chat
   in the Logs tab deletes its file.

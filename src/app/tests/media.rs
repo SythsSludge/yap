@@ -36,8 +36,8 @@ fn previewing_untrusted_image_needs_consent() {
     );
     assert!(h.viewer.is_some());
     h.on_image("https://random.host/pic.png".into(), Err("HTTP 404".into()));
-    assert!(h.viewer.is_none());
-    assert_eq!(h.last_toast(), Some("Couldn't load image: HTTP 404"));
+    // The viewer stays open with the reason, so the chat's other images are a key away.
+    assert_eq!(h.viewer.as_ref().unwrap().note, Some(crate::images::ViewerNote::Failed("HTTP 404".into())));
 }
 
 #[test]
@@ -51,6 +51,44 @@ fn images_arriving_fill_the_viewer() {
     h.on_image("https://i.imgur.com/a.png".into(), Ok(loaded));
     assert!(h.viewer.as_ref().unwrap().protocol.is_some());
     assert!(matches!(h.images.get("https://i.imgur.com/a.png"), Some(ImageState::Ready(_))));
+    h.press(KeyCode::Esc);
+    assert!(h.viewer.is_none());
+}
+
+#[test]
+fn arrows_step_through_the_chats_images() {
+    use crate::images::ViewerNote;
+    let mut h = harness().online().with_prefs().partnered();
+    h.server(ServerMessage::ReceiveMessage("https://i.imgur.com/one.png and https://example.com/page".into()));
+    h.type_str("https://random.host/two.jpg");
+    h.press(KeyCode::Enter);
+    h.server(ServerMessage::ReceiveMessage("https://i.imgur.com/three.png https://i.imgur.com/one.png".into()));
+    let urls: Vec<String> = h.chat_images().into_iter().map(|(u, _)| u).collect();
+    assert_eq!(urls, ["https://i.imgur.com/one.png", "https://random.host/two.jpg", "https://i.imgur.com/three.png"]);
+
+    h.preview("https://i.imgur.com/one.png");
+    assert_eq!(h.viewer_position(), Some((0, 3)));
+    h.press(KeyCode::Left);
+    assert_eq!(h.viewer_position(), Some((0, 3)), "no wrapping past the first");
+
+    // The untrusted one asks inside the viewer instead of fetching.
+    h.take_effects();
+    h.press(KeyCode::Right);
+    let v = h.viewer.as_ref().unwrap();
+    assert_eq!(v.url, "https://random.host/two.jpg");
+    assert_eq!(v.note, Some(ViewerNote::Untrusted { host: "random.host".into() }));
+    assert!(h.take_effects().is_empty());
+    h.press(KeyCode::Enter);
+    assert_eq!(
+        h.take_effects(),
+        vec![Effect::FetchImage { url: "https://random.host/two.jpg".into(), allow_host: Some("random.host".into()) }]
+    );
+    assert_eq!(h.viewer.as_ref().unwrap().note, None);
+
+    h.press(KeyCode::Right);
+    assert_eq!(h.viewer_position(), Some((2, 3)));
+    h.press(KeyCode::Right);
+    assert_eq!(h.viewer_position(), Some((2, 3)), "no wrapping past the last");
     h.press(KeyCode::Esc);
     assert!(h.viewer.is_none());
 }

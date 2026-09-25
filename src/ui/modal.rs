@@ -5,8 +5,9 @@ use crate::app::modal::Modal;
 use crate::app::{App, Hit, ListId, ViewerButton};
 use crate::catalog::ANY;
 use crate::commands::HELP;
+use crate::history::Outcome;
 use crate::links::{Trust, check_trust, looks_like_image};
-use crate::text::truncate;
+use crate::text::{truncate, width};
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Style};
@@ -87,6 +88,85 @@ fn kink_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
+/// The history popup: patterns first, then everyone you've met, newest first.
+fn history_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    use crate::stats::human_duration as dur;
+    let t = &app.theme;
+    let heading = |s: &str| Line::from(Span::styled(s.to_owned(), Style::new().fg(t.accent).bold()));
+    let row = |label: &str, value: String| {
+        let spans = [Span::styled(format!("{label:<18}"), Style::new().fg(t.muted)), Span::raw(value)];
+        crate::text::wrap(&spans, width, 0)
+    };
+    let history = &app.history;
+    if history.records.is_empty() {
+        let why = if app.config.settings.keep_history {
+            "Nobody yet. Everyone you're matched with shows up here: who they were, how it ended and how long it lasted."
+        } else {
+            "Partner history is off (Settings → Keep partner history)."
+        };
+        return crate::text::wrap(&[Span::styled(why, Style::new().fg(t.muted))], width, 0);
+    }
+    let s = history.summary();
+    let mut lines = vec![heading("patterns")];
+    let mut overall = format!("met {} · average chat {}", s.met, dur(s.average_secs));
+    if s.skipped > 0 {
+        overall.push_str(&format!(" · auto-skipped {}", s.skipped));
+    }
+    if s.silent > 0 {
+        overall.push_str(&format!(" · {} ended before anyone spoke", s.silent));
+    }
+    lines.extend(row("overall", overall));
+    let ended: Vec<String> = s
+        .outcomes
+        .iter()
+        .filter(|(o, _)| *o != Outcome::Skipped)
+        .map(|(o, n)| format!("{} {n}", o.describe()))
+        .collect();
+    if !ended.is_empty() {
+        lines.extend(row("how chats ended", ended.join(" · ")));
+    }
+    let species: Vec<String> =
+        s.species.iter().map(|(name, n, secs)| format!("{name} ({n}, avg {})", dur(*secs))).collect();
+    if !species.is_empty() {
+        lines.extend(row("most met", species.join(" · ")));
+    }
+    let buckets: Vec<String> = ["none", "1–2", "3+"]
+        .iter()
+        .zip(s.by_shared)
+        .filter(|(_, (n, _))| *n > 0)
+        .map(|(label, (n, secs))| format!("{label}: avg {} ({n})", dur(secs)))
+        .collect();
+    if !buckets.is_empty() {
+        lines.extend(row("by shared kinks", buckets.join(" · ")));
+    }
+    let rules: Vec<String> = s.skip_rules.iter().map(|(r, n)| format!("{} {n}", r.describe())).collect();
+    if !rules.is_empty() {
+        lines.extend(row("auto-skips for", rules.join(" · ")));
+    }
+
+    lines.push(Line::default());
+    lines.push(heading("everyone, newest first"));
+    let who_w = width.saturating_sub(13 + 8 + 10 + 28).clamp(12, 40);
+    for r in history.records.iter().rev().take(1000) {
+        let skipped = r.outcome == Outcome::Skipped;
+        let outcome = match r.skip {
+            Some(rule) if skipped => format!("skipped: {}", rule.short()),
+            _ => r.outcome.describe().to_owned(),
+        };
+        let style = Style::new().fg(if skipped { t.muted } else { t.fg });
+        let length = if skipped { String::new() } else { dur(r.secs) };
+        let talk = if skipped { String::new() } else { format!("{}↑ {}↓", r.sent, r.received) };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{}  ", r.at.format("%m-%d %H:%M")), Style::new().fg(t.muted)),
+            Span::styled(format!("{:<who_w$}", truncate(&r.partner(), who_w)), Style::new().fg(t.fg)),
+            Span::styled(format!("{length:>7} "), Style::new().fg(t.fg)),
+            Span::styled(format!("{talk:>8}  "), Style::new().fg(t.muted)),
+            Span::styled(outcome, style),
+        ]));
+    }
+    lines
+}
+
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
     let Some(modal) = &app.modal else { return };
@@ -139,9 +219,42 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 row("average chat", human_duration(run.average_secs()), human_duration(all.average_secs())),
                 row("longest chat", human_duration(run.longest_secs), human_duration(all.longest_secs)),
                 Line::default(),
-                Line::from(Span::styled("kept on this machine only", Style::new().fg(t.muted))),
+                Line::from(vec![
+                    Span::styled("kept on this machine only · ", Style::new().fg(t.muted)),
+                    key("h"),
+                    Span::styled(" partner history", Style::new().fg(t.muted)),
+                ]),
             ];
             frame.render_widget(Paragraph::new(lines), inner);
+        }
+        Modal::Spelling { word, suggestions, selected, .. } => {
+            let rows = suggestions.len() + 1;
+            let w = 44.min(area.width.saturating_sub(4));
+            let rect = centered(area, w, (rows as u16 + 4).min(area.height.saturating_sub(2)));
+            frame.render_widget(Clear, rect);
+            let block = frame_block(app, "Spelling");
+            let inner = block.inner(rect);
+            frame.render_widget(block, rect);
+            let head = Line::from(vec![
+                Span::styled(truncate(word, inner.width as usize - 2), Style::new().fg(t.error).underlined()),
+                Span::styled(if suggestions.is_empty() { "  no suggestions" } else { "" }, Style::new().fg(t.muted)),
+            ]);
+            frame.render_widget(Paragraph::new(head), Rect::new(inner.x, inner.y, inner.width, 1));
+            let mut items: Vec<ListItem> = suggestions.iter().map(|s| ListItem::new(s.clone())).collect();
+            items.push(ListItem::new(Span::styled(
+                format!("+ add “{word}” to your dictionary"),
+                Style::new().fg(t.muted),
+            )));
+            let list = Rect::new(inner.x, inner.y + 2, inner.width, inner.height.saturating_sub(2));
+            super::render_list(frame, app, list, items, super::Rows::new(ListId::Modal, Some(*selected), true));
+        }
+        Modal::History { scroll } => {
+            let rect = centered(area, 96, area.height.saturating_sub(2));
+            let block = frame_block(app, "History · ↑/↓ scroll · x forget");
+            let width = block.inner(rect).width as usize;
+            let lines = history_lines(app, width);
+            frame.render_widget(Clear, rect);
+            frame.render_widget(Paragraph::new(lines).block(block).scroll((*scroll, 0)), rect);
         }
         Modal::Kinks { scroll } => {
             let rect = centered(area, 80, area.height.saturating_sub(2));
@@ -421,53 +534,162 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// `1.2 MB`, `340 KB`.
+fn human_bytes(n: usize) -> String {
+    match n {
+        n if n >= 1 << 20 => format!("{:.1} MB", n as f64 / (1 << 20) as f64),
+        n if n >= 1 << 10 => format!("{} KB", n >> 10),
+        n => format!("{n} B"),
+    }
+}
+
+/// The full-screen image viewer: the picture centred, where it came from along the
+/// top, and ←/→ through the chat's other images.
 pub fn viewer(frame: &mut Frame, app: &mut App, area: Rect) {
+    use crate::images::{ImageState, ViewerNote};
     let Some(viewer) = app.viewer.as_ref() else { return };
     let t = app.theme.clone();
+    let url = viewer.url.clone();
+    let note = viewer.note.clone();
+    let ready = viewer.protocol.is_some();
+    let position = app.viewer_position();
+    let parsed = url::Url::parse(&url).ok();
+    let host = parsed.as_ref().and_then(|u| u.host_str()).unwrap_or_default().to_owned();
+
     let rect = area.inner(ratatui::layout::Margin::new(2, 1));
     frame.render_widget(Clear, rect);
-    let title = truncate(&viewer.url, rect.width.saturating_sub(6) as usize);
+    let mut title = vec![Span::raw(" ")];
+    if let Some((i, len)) = position {
+        title.push(Span::styled(format!("{} / {len}", i + 1), Style::new().fg(t.accent).bold()));
+        let entry = &app.chat.entries[app.chat_images()[i].1];
+        let who = if matches!(entry.kind, crate::app::chat::EntryKind::You(_)) {
+            app.my_label()
+        } else {
+            app.partner_label()
+        };
+        title.push(Span::styled(format!(" · from {who} · {} ", entry.at.format("%H:%M")), Style::new().fg(t.muted)));
+    } else {
+        title.push(Span::styled("image ", Style::new().fg(t.muted)));
+    }
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(t.muted))
-        .title(Span::styled(format!(" {title} "), Style::new().fg(t.muted)))
+        .title(Line::from(title))
+        .title(Line::from(Span::styled(format!(" {host} "), Style::new().fg(t.muted))).right_aligned())
         .style(Style::new().bg(t.bg));
-    let mut inner = block.inner(rect);
+    let inner = block.inner(rect);
     frame.render_widget(block, rect);
-    if inner.height > 3 {
-        // A row of buttons along the bottom.
-        let bar = Rect::new(inner.x, inner.bottom() - 1, inner.width, 1);
-        inner.height -= 2;
-        let buttons = [
-            ("open", "o", ViewerButton::Open),
-            ("copy link", "y", ViewerButton::CopyLink),
-            ("save to drawer", "s", ViewerButton::SaveToDrawer),
-            ("save image", "d", ViewerButton::SaveImage),
-            ("close", "esc", ViewerButton::Close),
-        ];
-        let mut x = bar.x;
-        let mut spans = Vec::new();
-        for (label, key, button) in buttons {
-            let text = format!(" {label} ");
-            let w = text.chars().count() as u16;
-            if x + w + key.len() as u16 + 2 > bar.right() {
-                break;
-            }
-            app.hit(Rect::new(x, bar.y, w, 1), Hit::Viewer(button));
-            spans.push(Span::styled(text, Style::new().fg(t.fg).bg(t.surface)));
-            spans.push(Span::styled(format!(" {key}  "), Style::new().fg(t.muted)));
-            x += w + key.len() as u16 + 3;
-        }
-        frame.render_widget(Paragraph::new(Line::from(spans)), bar);
+    if inner.height < 4 || inner.width < 12 {
+        return;
     }
-    let Some(viewer) = app.viewer.as_mut() else { return };
-    match viewer.protocol.as_mut() {
-        Some(protocol) => {
-            frame.render_stateful_widget(StatefulImage::default().resize(Resize::Fit(None)), inner, protocol)
+
+    // Bottom: a line about the file, then the buttons. Sides: arrows to step.
+    let info_y = inner.bottom() - 2;
+    let bar_y = inner.bottom() - 1;
+    let pic = Rect::new(inner.x + 2, inner.y, inner.width - 4, inner.height.saturating_sub(3));
+    let (has_prev, has_next) = position.map_or((false, false), |(i, len)| (i > 0, i + 1 < len));
+    let mid = pic.y + pic.height / 2;
+    for (show, x, glyph, button) in
+        [(has_prev, inner.x, "‹", ViewerButton::Prev), (has_next, inner.right() - 1, "›", ViewerButton::Next)]
+    {
+        if show {
+            frame.render_widget(
+                Paragraph::new(Span::styled(glyph, Style::new().fg(t.accent).bold())),
+                Rect::new(x, mid, 1, 1),
+            );
+            app.hit(Rect::new(x.saturating_sub(u16::from(x > inner.x)), pic.y, 2, pic.height), Hit::Viewer(button));
         }
-        None => frame.render_widget(
-            Paragraph::new(Span::styled("Loading…", Style::new().fg(t.muted))).centered(),
-            centered(inner, inner.width, 1),
-        ),
+    }
+
+    let info = match app.images.get(&url) {
+        Some(ImageState::Ready(loaded)) => {
+            let name = crate::images::file_name_for(&url, &loaded.bytes);
+            format!("{name} · {}×{} · {}", loaded.image.width(), loaded.image.height(), human_bytes(loaded.bytes.len()))
+        }
+        _ => truncate(&url, inner.width as usize),
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(truncate(&info, inner.width as usize), Style::new().fg(t.muted))).centered(),
+        Rect::new(inner.x, info_y, inner.width, 1),
+    );
+
+    let untrusted = matches!(note, Some(ViewerNote::Untrusted { .. }));
+    let mut buttons: Vec<(&str, &str, ViewerButton)> = Vec::new();
+    if has_prev {
+        buttons.push(("←", "prev", ViewerButton::Prev));
+    }
+    if has_next {
+        buttons.push(("→", "next", ViewerButton::Next));
+    }
+    if untrusted {
+        buttons.push(("enter", "load once", ViewerButton::LoadOnce));
+        buttons.push(("t", "trust host", ViewerButton::Trust));
+    }
+    buttons.push(("o", "open", ViewerButton::Open));
+    buttons.push(("y", "copy link", ViewerButton::CopyLink));
+    buttons.push(("s", "save to drawer", ViewerButton::SaveToDrawer));
+    if ready {
+        buttons.push(("d", "save image", ViewerButton::SaveImage));
+    }
+    buttons.push(("esc", "close", ViewerButton::Close));
+    // Drop buttons from the middle of the list until the bar fits.
+    let chip_w = |(key, label, _): &(&str, &str, ViewerButton)| (width(key) + 1 + width(label)) as u16;
+    while buttons.len() > 2 && buttons.iter().map(|b| chip_w(b) + 3).sum::<u16>() > inner.width {
+        buttons.remove(buttons.len() - 2);
+    }
+    let total: u16 = buttons.iter().map(|b| chip_w(b) + 3).sum::<u16>().saturating_sub(3);
+    let mut x = inner.x + inner.width.saturating_sub(total) / 2;
+    let mut spans = vec![Span::raw(" ".repeat((x - inner.x) as usize))];
+    for (i, b) in buttons.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("   "));
+            x += 3;
+        }
+        let (key, label, button) = *b;
+        app.hit(Rect::new(x, bar_y, chip_w(b), 1), Hit::Viewer(button));
+        spans.push(Span::styled(key, Style::new().fg(t.accent).bold()));
+        spans.push(Span::styled(format!(" {label}"), Style::new().fg(t.fg)));
+        x += chip_w(b);
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(inner.x, bar_y, inner.width, 1));
+
+    let message = |lines: Vec<Line<'static>>| {
+        let h = lines.len() as u16;
+        (
+            Paragraph::new(lines).centered().wrap(Wrap { trim: true }),
+            Rect::new(pic.x, mid.saturating_sub(h / 2), pic.width, h),
+        )
+    };
+    let Some(viewer) = app.viewer.as_mut() else { return };
+    match (viewer.protocol.as_mut(), note) {
+        (Some(protocol), _) => {
+            let size = protocol.size_for(Resize::Fit(None), ratatui::layout::Size::new(pic.width, pic.height));
+            let at = Rect::new(
+                pic.x + pic.width.saturating_sub(size.width) / 2,
+                pic.y + pic.height.saturating_sub(size.height) / 2,
+                size.width.min(pic.width),
+                size.height.min(pic.height),
+            );
+            frame.render_stateful_widget(StatefulImage::default().resize(Resize::Fit(None)), at, protocol)
+        }
+        (None, Some(ViewerNote::Untrusted { host })) => {
+            let (text, at) = message(vec![
+                Line::from(Span::styled(format!("{host} isn't a trusted image host"), Style::new().fg(t.fg).bold())),
+                Line::from(Span::styled("Loading it shows them your IP address.", Style::new().fg(t.muted))),
+            ]);
+            frame.render_widget(text, at);
+        }
+        (None, Some(ViewerNote::Failed(e))) => {
+            let (text, at) = message(vec![
+                Line::from(Span::styled("Couldn't load this image", Style::new().fg(t.error).bold())),
+                Line::from(Span::styled(e, Style::new().fg(t.muted))),
+            ]);
+            frame.render_widget(text, at);
+        }
+        (None, None) => {
+            let (text, at) =
+                message(vec![Line::from(Span::styled(format!("loading from {host}…"), Style::new().fg(t.muted)))]);
+            frame.render_widget(text, at);
+        }
     }
 }

@@ -17,6 +17,12 @@ fn render(app: &mut Harness, w: u16, h: u16) -> String {
     terminal.backend().to_string()
 }
 
+fn render_backend(app: &mut Harness, w: u16, h: u16) -> TestBackend {
+    let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+    terminal.draw(|f| draw(f, &mut app.app)).unwrap();
+    terminal.backend().clone()
+}
+
 /// A deterministic app: no timestamps, fixed traffic times.
 fn app() -> Harness {
     let mut h = harness();
@@ -359,4 +365,88 @@ fn command_hints_mark_what_tab_takes() {
     let tab_line = screen.lines().find(|l| l.contains("tab /log <path>")).unwrap_or_else(|| panic!("{screen}"));
     assert!(tab_line.contains("save this chat"));
     assert!(screen.contains("/logs"));
+}
+
+#[test]
+fn history_popup() {
+    use crate::history::{Outcome, Record, SkipRule};
+    let mut h = app();
+    let info = |species: &str| crate::protocol::PartnerInfo {
+        gender: "Female".into(),
+        species: species.into(),
+        kinks: "Musk".into(),
+        role: "Dominant".into(),
+        language: None,
+    };
+    let at = fixed_time();
+    h.history.push(Record {
+        secs: 840,
+        sent: 12,
+        received: 15,
+        shared_kinks: 3,
+        ..Record::new(at, &info("Fox"), Outcome::TheyLeft)
+    });
+    h.history.push(Record { secs: 95, sent: 1, received: 0, ..Record::new(at, &info("Wolf"), Outcome::YouLeft) });
+    h.history.push(Record { skip: Some(SkipRule::Language), ..Record::new(at, &info("Cat"), Outcome::Skipped) });
+    h.run_command(crate::commands::Command::History);
+    insta::assert_snapshot!(render(&mut h, 100, 20));
+}
+
+#[test]
+fn misspelled_words_are_underlined() {
+    let mut h = chatting();
+    h.load_speller();
+    h.type_str("helo there ");
+    let error = h.theme.error;
+    let backend = render_backend(&mut h, 110, 30);
+    let buf = backend.buffer();
+    let underlined: String = (0..buf.area.height)
+        .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
+        .filter_map(|(x, y)| {
+            let cell = &buf[(x, y)];
+            let marked = cell.modifier.contains(ratatui::style::Modifier::UNDERLINED) && cell.fg == error;
+            marked.then(|| cell.symbol().to_owned())
+        })
+        .collect();
+    assert_eq!(underlined, "helo");
+}
+
+#[test]
+fn image_viewer() {
+    let mut h = chatting();
+    h.toasts.clear();
+    let url = "https://i.imgur.com/ref.png".to_string();
+    h.server(ServerMessage::ReceiveMessage(format!("my ref {url} and https://random.host/b.jpg")));
+    h.chat.entries.iter_mut().for_each(|e| e.at = fixed_time());
+    let img: image::DynamicImage = image::RgbaImage::from_pixel(40, 20, image::Rgba([200, 80, 40, 255])).into();
+    let loaded =
+        crate::images::prepare(&h.picker.clone(), img, vec![0; 2048], ratatui::layout::Size::new(4, 2)).unwrap();
+    h.on_image(url.clone(), Ok(loaded));
+    h.preview(&url);
+    insta::assert_snapshot!("image_viewer_loaded", render(&mut h, 90, 24));
+    h.press(KeyCode::Right);
+    insta::assert_snapshot!("image_viewer_untrusted", render(&mut h, 90, 24));
+}
+
+#[test]
+fn viewer_centres_the_picture() {
+    let mut h = chatting();
+    let url = "https://i.imgur.com/ref.png".to_string();
+    h.server(ServerMessage::ReceiveMessage(url.clone()));
+    let img: image::DynamicImage = image::RgbaImage::from_pixel(40, 20, image::Rgba([200, 80, 40, 255])).into();
+    let loaded = crate::images::prepare(&h.picker.clone(), img, vec![0; 16], ratatui::layout::Size::new(4, 2)).unwrap();
+    h.on_image(url.clone(), Ok(loaded));
+    h.preview(&url);
+    let backend = render_backend(&mut h, 90, 24);
+    let buf = backend.buffer();
+    let painted: Vec<(u16, u16)> = (0..24)
+        .flat_map(|y| (0..90).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let c = &buf[(x, y)];
+            [c.fg, c.bg].contains(&ratatui::style::Color::Rgb(200, 80, 40))
+        })
+        .collect();
+    assert_eq!(painted.len(), 4, "a 40×20 px image is 4×1 cells at 10×20 px per cell");
+    let (x, y) = painted[0];
+    assert!((41..=45).contains(&x) && (9..=12).contains(&y), "centred, not in the corner: {painted:?}");
 }

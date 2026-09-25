@@ -8,7 +8,8 @@ impl App {
             Ok(()) => {
                 self.prefs_ui.profile = self.config.profiles.iter().position(|p| p.name == name).unwrap_or(0);
                 self.config_changed();
-                self.toast(Level::Success, format!("Using profile `{name}`."));
+                let place = if self.session_count() > 1 { " in this chat" } else { "" };
+                self.toast(Level::Success, format!("Using profile `{name}`{place}."));
             }
             Err(e) => self.toast(Level::Error, e.to_string()),
         }

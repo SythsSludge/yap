@@ -152,12 +152,20 @@ pub struct Settings {
     pub rp_formatting: bool,
     /// Turn `:smile:` into the emoji when sending, and complete shortcodes with Tab.
     pub emoji_shortcodes: bool,
+    /// Underline misspelled words in the message box.
+    pub spellcheck: bool,
+    /// Hunspell dictionary name, like `en_US` or `en_GB`.
+    pub spell_language: String,
+    /// Words you've added to the dictionary.
+    pub spell_words: Vec<String>,
     /// Start each partner in a fresh chat view instead of one endless scroll. Earlier
     /// chats stay available in the Logs tab either way.
     pub split_chats: bool,
     /// Write each chat to `~/.local/share/yap/logs`. Off by default: these are private
     /// conversations and shouldn't hit the disk unless you ask.
     pub save_logs: bool,
+    /// Remember who you met and how it went (no messages) in `history.jsonl`.
+    pub keep_history: bool,
     pub show_sidebar: bool,
     pub auto_reconnect: bool,
     /// Ask before leaving, blocking or re-rolling a partner.
@@ -190,8 +198,12 @@ impl Default for Settings {
             transparent_background: false,
             rp_formatting: true,
             emoji_shortcodes: true,
+            spellcheck: true,
+            spell_language: "en_US".into(),
+            spell_words: Vec::new(),
             split_chats: false,
             save_logs: false,
+            keep_history: true,
             show_sidebar: true,
             auto_reconnect: true,
             confirm_actions: true,
@@ -530,6 +542,7 @@ pub struct Paths {
     /// Where "save image" puts files.
     pub downloads_dir: PathBuf,
     pub stats_file: PathBuf,
+    pub history_file: PathBuf,
     pub data_dir: PathBuf,
 }
 
@@ -544,6 +557,7 @@ impl Paths {
             drawer_file: dirs.data_dir().join("drawer.toml"),
             logs_dir: dirs.data_dir().join("logs"),
             stats_file: dirs.data_dir().join("stats.toml"),
+            history_file: dirs.data_dir().join("history.jsonl"),
             downloads_dir: directories::UserDirs::new()
                 .and_then(|d| d.download_dir().map(Path::to_path_buf))
                 .or_else(|| directories::BaseDirs::new().map(|d| d.home_dir().join("Downloads")))
@@ -561,6 +575,7 @@ impl Paths {
             drawer_file: dir.join("drawer.toml"),
             logs_dir: dir.join("logs"),
             stats_file: dir.join("stats.toml"),
+            history_file: dir.join("history.jsonl"),
             downloads_dir: dir.join("downloads"),
             data_dir: dir.to_owned(),
         }

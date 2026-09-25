@@ -17,6 +17,7 @@ pub enum Confirm {
     DeleteSnippet(usize),
     CloseSession,
     LoadUntrusted(String),
+    ClearHistory,
 }
 
 /// What to do with the text typed into a prompt.
@@ -89,6 +90,19 @@ pub enum Modal {
     },
     /// Chat statistics.
     Stats,
+    /// Fixes for a misspelled word in the message box (bytes `start..end`). The row
+    /// after the suggestions adds the word to your dictionary.
+    Spelling {
+        word: String,
+        start: usize,
+        end: usize,
+        suggestions: Vec<String>,
+        selected: usize,
+    },
+    /// Everyone you've met, with patterns worth knowing.
+    History {
+        scroll: u16,
+    },
     /// The partner's kinks (or yours, with no partner), with definitions.
     Kinks {
         scroll: u16,

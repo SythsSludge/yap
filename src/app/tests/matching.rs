@@ -76,6 +76,7 @@ fn shared_kink_and_language_rules() {
             role: "R".into(),
             language: lang.map(Into::into),
         })
+        .map(|(_, why)| why)
     };
     assert_eq!(reason(&h, "Biting, Tickling", None).as_deref(), Some("only 1 shared kink"));
     assert_eq!(reason(&h, "Biting, Musk", None), None);

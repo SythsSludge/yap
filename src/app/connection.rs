@@ -60,7 +60,7 @@ impl App {
         }
         if std::mem::take(&mut self.closing) {
             if had_partner {
-                self.end_conversation();
+                self.end_conversation(Outcome::YouLeft);
             }
             self.status = ConnStatus::Offline { reason, retry_at: None };
             return;
@@ -76,7 +76,7 @@ impl App {
         }
         if had_partner {
             self.flag_undelivered("the connection dropped");
-            self.end_conversation();
+            self.end_conversation(Outcome::ConnectionLost);
         }
         self.status = ConnStatus::Offline { reason, retry_at };
     }
@@ -128,7 +128,7 @@ impl App {
                 self.can_block_previous = true;
                 self.system("Your yiffing partner has left.");
                 self.flag_undelivered("they left");
-                self.end_conversation();
+                self.end_conversation(Outcome::TheyLeft);
                 self.alert("Partner Left");
                 self.schedule_requeue();
             }
@@ -137,14 +137,14 @@ impl App {
                 self.can_block_previous = false;
                 self.system("Your yiffing partner has disconnected unexpectedly.");
                 self.flag_undelivered("they disconnected");
-                self.end_conversation();
+                self.end_conversation(Outcome::TheyDropped);
                 self.schedule_requeue();
                 self.alert("Partner Disconnected");
             }
             ServerMessage::PartnerBlocked => {
                 if self.has_partner() {
                     self.system("Your partner has been blocked and disconnected from you.");
-                    self.end_conversation();
+                    self.end_conversation(Outcome::YouBlocked);
                     self.schedule_requeue();
                 } else {
                     let kind = EntryKind::System("Your previous partner has been blocked.".into());
@@ -159,7 +159,7 @@ impl App {
                 self.reset_partner();
                 self.can_block_previous = true;
                 self.system("You have disconnected from your partner.");
-                self.end_conversation();
+                self.end_conversation(Outcome::YouLeft);
             }
             ServerMessage::InvalidPreferences => {
                 if self.partner == PartnerState::Searching {

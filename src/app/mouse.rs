@@ -26,6 +26,12 @@ pub enum ListId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewerButton {
+    Prev,
+    Next,
+    /// Load an untrusted image this once.
+    LoadOnce,
+    /// Trust the image's host, then load it.
+    Trust,
     Open,
     CopyLink,
     SaveToDrawer,
@@ -171,7 +177,8 @@ impl App {
                     | Modal::Profiles { selected }
                     | Modal::Themes { selected, .. }
                     | Modal::Snippets { selected, .. }
-                    | Modal::Palette { selected, .. },
+                    | Modal::Palette { selected, .. }
+                    | Modal::Spelling { selected, .. },
                 ) => {
                     *selected = index;
                     // The theme picker previews whatever is selected.
@@ -200,6 +207,10 @@ impl App {
             }
             ViewerButton::SaveImage => self.save_image(&url),
             ViewerButton::Close => self.viewer = None,
+            ViewerButton::Prev => self.viewer_step(-1),
+            ViewerButton::Next => self.viewer_step(1),
+            ViewerButton::LoadOnce => self.viewer_load_once(),
+            ViewerButton::Trust => self.viewer_trust(),
         }
     }
 

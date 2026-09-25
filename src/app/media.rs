@@ -145,7 +145,69 @@ impl App {
                 None
             }
         };
-        self.viewer = Some(Viewer { url: url.to_owned(), protocol });
+        self.viewer = Some(Viewer { url: url.to_owned(), protocol, note: None });
+    }
+
+    /// Image links in the current chat, oldest first, each with its entry index.
+    pub fn chat_images(&self) -> Vec<(String, usize)> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for (i, entry) in self.chat.entries.iter().enumerate() {
+            for link in entry.message_text().map(find_links).unwrap_or_default() {
+                let is_image = url::Url::parse(&link.url).is_ok_and(|u| looks_like_image(&u));
+                if is_image && seen.insert(link.url.clone()) {
+                    out.push((link.url, i));
+                }
+            }
+        }
+        out
+    }
+
+    /// Where the viewer's image sits among the chat's: (index, count).
+    pub fn viewer_position(&self) -> Option<(usize, usize)> {
+        let url = &self.viewer.as_ref()?.url;
+        let images = self.chat_images();
+        images.iter().position(|(u, _)| u == url).map(|i| (i, images.len()))
+    }
+
+    /// ←/→ in the viewer: show the previous or next image from the chat.
+    pub fn viewer_step(&mut self, delta: isize) {
+        let Some((pos, len)) = self.viewer_position() else { return };
+        let next = pos as isize + delta;
+        if !(0..len as isize).contains(&next) {
+            return;
+        }
+        let url = self.chat_images().swap_remove(next as usize).0;
+        self.show_in_viewer(&url);
+    }
+
+    /// Like `preview`, but already inside the viewer: an untrusted host asks there
+    /// rather than in a popup.
+    fn show_in_viewer(&mut self, url: &str) {
+        let s = &self.config.settings.images;
+        let Ok(parsed) = url::Url::parse(url) else { return };
+        let note = match check_trust(&parsed, &s.trusted_domains, s.https_only) {
+            Trust::Trusted => return self.open_viewer(url, None),
+            Trust::UntrustedHost => ViewerNote::Untrusted { host: parsed.host_str().unwrap_or("?").to_owned() },
+            Trust::InsecureScheme => ViewerNote::Failed("Images over plain http aren't loaded.".into()),
+            Trust::NotHttp => ViewerNote::Failed("Only http(s) images can be previewed.".into()),
+        };
+        self.viewer = Some(Viewer { url: url.to_owned(), protocol: None, note: Some(note) });
+    }
+
+    pub fn viewer_load_once(&mut self) {
+        if let Some(Viewer { url, note: Some(ViewerNote::Untrusted { host }), .. }) = &self.viewer {
+            let (url, host) = (url.clone(), host.clone());
+            self.open_viewer(&url, Some(host));
+        }
+    }
+
+    pub fn viewer_trust(&mut self) {
+        if let Some(Viewer { url, note: Some(ViewerNote::Untrusted { host }), .. }) = &self.viewer {
+            let (url, host) = (url.clone(), host.clone());
+            self.trust_domain(&host);
+            self.open_viewer(&url, None);
+        }
     }
 
     pub fn on_image(&mut self, url: String, result: Result<Loaded, String>) {
@@ -158,9 +220,9 @@ impl App {
                 ImageState::Ready(loaded)
             }
             Err(e) => {
-                if self.viewer.as_ref().is_some_and(|v| v.url == url) {
-                    self.viewer = None;
-                    self.toast(Level::Error, format!("Couldn't load image: {e}"));
+                // Stay open, so ←/→ still reach the other images.
+                if let Some(v) = self.viewer.as_mut().filter(|v| v.url == url) {
+                    v.note = Some(ViewerNote::Failed(e.clone()));
                 }
                 ImageState::Failed(e)
             }

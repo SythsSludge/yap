@@ -82,6 +82,10 @@ impl App {
             self.refresh_theme();
         }
         self.prefs_ui.profile = self.prefs_ui.profile.min(self.config.profiles.len() - 1);
+        let spell = |s: &crate::config::Settings| (s.spellcheck, s.spell_language.clone(), s.spell_words.clone());
+        if spell(&self.config.settings) != spell(&old.settings) {
+            self.load_speller();
+        }
         for w in warnings.into_iter().chain(key_warnings) {
             self.toast(Level::Warning, w);
         }

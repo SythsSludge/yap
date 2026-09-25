@@ -12,10 +12,12 @@ pub enum Row {
     ChatStyle,
     RpFormatting,
     Emoji,
+    Spellcheck,
     Timestamps,
     Sidebar,
     SplitChats,
     SaveLogs,
+    KeepHistory,
     ConfirmActions,
     AutoRequeue,
     RequeueDelay,
@@ -56,9 +58,8 @@ impl Row {
         use Row::*;
         match self {
             Theme | Transparent | ChatStyle | RpFormatting | Timestamps | Sidebar => "Appearance",
-            SplitChats | SaveLogs | ConfirmActions | AutoRequeue | RequeueDelay | Editor | ParagraphBreak | Emoji => {
-                "Chats"
-            }
+            SplitChats | SaveLogs | KeepHistory | ConfirmActions | AutoRequeue | RequeueDelay | Editor
+            | ParagraphBreak | Emoji | Spellcheck => "Chats",
             SkipEnabled | SkipMinShared | SkipLanguage | SkipMax => {
                 "Auto-skip (limits are set per profile in Preferences)"
             }
@@ -85,12 +86,14 @@ impl Row {
             Sidebar => "Partner sidebar".into(),
             SplitChats => "Fresh chat view for each partner".into(),
             SaveLogs => "Save chat logs to disk".into(),
+            KeepHistory => "Keep partner history".into(),
             ConfirmActions => "Confirm leave / block / re-roll".into(),
             AutoRequeue => "Search again when a partner leaves".into(),
             RequeueDelay => "Seconds before searching again".into(),
             Editor => "Editor command".into(),
             ParagraphBreak => "Paragraph separator for editor posts".into(),
             Emoji => "Emoji shortcodes".into(),
+            Spellcheck => "Spellcheck".into(),
             SkipEnabled => "Skip partners that break my rules".into(),
             SkipMinShared => "Minimum shared kinks".into(),
             SkipLanguage => "Skip a different language".into(),
@@ -142,10 +145,12 @@ impl Row {
             ChatStyle => format!("‹ {} ›", s.chat_style.name()),
             RpFormatting => flag(s.rp_formatting),
             Emoji => flag(s.emoji_shortcodes),
+            Spellcheck => format!("{} · {}", flag(s.spellcheck), s.spell_language),
             Timestamps => flag(s.timestamps),
             Sidebar => flag(s.show_sidebar),
             SplitChats => flag(s.split_chats),
             SaveLogs => flag(s.save_logs),
+            KeepHistory => flag(s.keep_history),
             ConfirmActions => flag(s.confirm_actions),
             AutoRequeue => flag(s.auto_requeue),
             RequeueDelay => format!("‹ {} ›", s.requeue_delay_secs),
@@ -197,7 +202,13 @@ impl Row {
             SaveLogs => {
                 "Write every chat to ~/.local/share/yap/logs (private files). Includes this session's chats so far."
             }
+            Spellcheck => {
+                "Underline misspelled words as you type; alt+s offers fixes. Other languages: set spell_language in config.toml and install its hunspell dictionary."
+            }
             Emoji => "Type :smile: and it's sent as the emoji. While typing :smi… Tab completes the first suggestion.",
+            KeepHistory => {
+                "Remember who you met and how each chat went (no messages) for /history. Stays on this machine."
+            }
             AutoRequeue => "After a partner leaves or drops, search again automatically. Esc in the chat cancels.",
             Editor => "Used by ^X or /edit. Anything your shell can run, e.g. `nvim` or `code --wait`.",
             ParagraphBreak => "The site only takes one line per message, so blank lines in the editor become this.",
@@ -234,12 +245,14 @@ pub fn rows(s: &Settings) -> Vec<Row> {
         Sidebar,
         SplitChats,
         SaveLogs,
+        KeepHistory,
         ConfirmActions,
         AutoRequeue,
         RequeueDelay,
         Editor,
         ParagraphBreak,
         Emoji,
+        Spellcheck,
         SkipEnabled,
         SkipMinShared,
         SkipLanguage,
@@ -284,8 +297,13 @@ impl App {
             Timestamps => s.timestamps ^= true,
             RpFormatting => s.rp_formatting ^= true,
             Emoji => s.emoji_shortcodes ^= true,
+            Spellcheck => {
+                s.spellcheck ^= true;
+                self.load_speller();
+            }
             Sidebar => s.show_sidebar ^= true,
             SplitChats => s.split_chats ^= true,
+            KeepHistory => s.keep_history ^= true,
             SaveLogs => {
                 s.save_logs ^= true;
                 if s.save_logs {

@@ -151,7 +151,7 @@ pub fn hint_pairs(app: &App) -> Vec<(String, &'static str)> {
     };
     use crate::app::{ChatFocus, PrefsPane};
     if app.viewer.is_some() {
-        return fixed(&[("o", "open"), ("y", "copy"), ("s", "save"), ("any key", "close")]);
+        return fixed(&[("←/→", "other images"), ("o", "open"), ("y", "copy"), ("s", "save"), ("esc", "close")]);
     }
     if app.modal.is_some() {
         return fixed(&[("esc", "cancel")]);

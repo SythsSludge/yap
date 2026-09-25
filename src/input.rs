@@ -45,6 +45,15 @@ impl LineEditor {
         self.cursor
     }
 
+    /// Move the cursor to byte `at`, snapped back to a character boundary.
+    pub fn set_cursor(&mut self, at: usize) {
+        let mut at = at.min(self.text.len());
+        while !self.text.is_char_boundary(at) {
+            at -= 1;
+        }
+        self.cursor = at;
+    }
+
     pub fn set(&mut self, text: &str) {
         self.text = flatten(text);
         self.cursor = self.text.len();
@@ -83,8 +92,13 @@ impl LineEditor {
 
     /// Replace the text from byte offset `start` up to the cursor.
     pub fn replace_to_cursor(&mut self, start: usize, with: &str) {
+        self.replace(start, self.cursor, with);
+    }
+
+    /// Replace bytes `start..end`, leaving the cursor just after the new text.
+    pub fn replace(&mut self, start: usize, end: usize, with: &str) {
         let with = flatten(with);
-        self.text.replace_range(start..self.cursor, &with);
+        self.text.replace_range(start..end, &with);
         self.cursor = start + with.len();
     }
 

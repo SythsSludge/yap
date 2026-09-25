@@ -22,6 +22,7 @@ mod reload;
 mod sessions;
 pub mod settings;
 mod snippets;
+mod spelling;
 mod transcript;
 
 pub use compose::{join_paragraphs, split_paragraphs};
@@ -37,7 +38,8 @@ use crate::catalog::{ANY, MAX_MESSAGE_LEN};
 use crate::commands::{self, Command, Parsed};
 use crate::config::{self, Config, Paths};
 use crate::drawer::Drawer;
-use crate::images::{ImageState, Loaded, Viewer};
+use crate::history::Outcome;
+use crate::images::{ImageState, Loaded, Viewer, ViewerNote};
 use crate::input::LineEditor;
 use crate::keymap::Keymap;
 use crate::links::{Trust, check_trust, find_links, looks_like_image, normalize_domain};
@@ -291,6 +293,10 @@ pub struct App {
     pub stats: crate::stats::Stats,
     pub run_stats: crate::stats::Stats,
     dirty_stats: bool,
+    /// Everyone you've met (see `history.rs`).
+    pub history: crate::history::History,
+    /// The loaded dictionary, when spellcheck is on and one was found.
+    pub speller: Option<crate::spell::Speller>,
     pub logs_ui: LogsUi,
     /// A resizable copy of the drawer's selected image, for its preview pane.
     pub drawer_preview: Option<(String, ratatui_image::protocol::StatefulProtocol)>,
@@ -340,7 +346,8 @@ impl App {
             skips,
             partner_nick,
             clock,
-        } = Session::new(0);
+            profile: _,
+        } = Session::new(0, String::new());
         App {
             paths,
             themes,
@@ -380,6 +387,8 @@ impl App {
             stats: crate::stats::Stats::starting(Local::now()),
             run_stats: crate::stats::Stats::starting(Local::now()),
             dirty_stats: false,
+            history: Default::default(),
+            speller: None,
             logs_ui: LogsUi::default(),
             drawer_preview: None,
             traffic,
@@ -430,8 +439,15 @@ impl App {
     /// Add a line to the chat view and to the live conversation's log.
     fn push(&mut self, kind: EntryKind) {
         let at = Local::now();
-        if matches!(kind, EntryKind::Partner(_)) && !self.chat_visible() {
-            self.unseen += 1;
+        if matches!(kind, EntryKind::Partner(_)) {
+            if !self.chat_visible() {
+                self.unseen += 1;
+            }
+            let away = !self.chat_visible() || !self.focused || !self.chat.is_following();
+            if away && (self.chat.new_from.is_none() || self.chat.new_read) {
+                self.chat.new_from = Some(self.chat.entries.len());
+                self.chat.new_read = false;
+            }
         }
         self.chat.push(at, kind.clone());
         self.logs.record(self.session_id, chat::Entry { at, kind });
@@ -441,14 +457,36 @@ impl App {
         self.push(EntryKind::System(text.into()));
     }
 
-    /// The current partner is gone: close their conversation in the logs and count it.
-    pub(super) fn end_conversation(&mut self) {
+    /// The current partner is gone: close their conversation in the logs, count it and
+    /// remember how it went.
+    pub(super) fn end_conversation(&mut self, outcome: Outcome) {
         let now = Local::now();
-        if let Some(conv) = self.logs.live(self.session_id) {
-            let secs = (now - conv.started).num_seconds().max(0) as u64;
-            self.count(|s| s.chat_ended(secs));
+        let Some(conv) = self.logs.live(self.session_id) else { return };
+        let secs = (now - conv.started).num_seconds().max(0) as u64;
+        let record = conv.partner.as_ref().map(|info| {
+            let entries = conv.loaded_entries().unwrap_or_default();
+            let count = |f: fn(&EntryKind) -> bool| entries.iter().filter(|e| f(&e.kind)).count() as u32;
+            let shared = KinkGroups::compare(&info.kink_list(), &self.config.active().preferences.kinks).shared.len();
+            crate::history::Record {
+                secs,
+                sent: count(|k| matches!(k, EntryKind::You(_))),
+                received: count(|k| matches!(k, EntryKind::Partner(_))),
+                shared_kinks: shared as u32,
+                profile: self.config.active_profile.clone(),
+                ..crate::history::Record::new(conv.started, info, outcome)
+            }
+        });
+        self.count(|s| s.chat_ended(secs));
+        if let Some(record) = record {
+            self.remember(record);
         }
         self.logs.end(self.session_id, now);
+    }
+
+    pub(super) fn remember(&mut self, record: crate::history::Record) {
+        if self.config.settings.keep_history {
+            self.history.push(record);
+        }
     }
 
     /// Update both the all-time and this-run stats.
@@ -478,6 +516,13 @@ impl App {
             && let Err(e) = self.drawer.save(&self.paths.drawer_file)
         {
             self.toast(Level::Error, format!("couldn't save drawer: {e:#}"));
+        }
+        if self.history.is_dirty()
+            && let Err(e) = self.history.save(&self.paths.history_file)
+        {
+            self.config.settings.keep_history = false;
+            self.config_changed();
+            self.toast(Level::Error, format!("Partner history turned off: {e:#}"));
         }
         if std::mem::take(&mut self.dirty_stats)
             && let Err(e) = self.stats.save(&self.paths.stats_file)

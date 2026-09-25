@@ -128,6 +128,7 @@ fn draw_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
         focus: None,
         search: None,
         unsure: &[],
+        new_from: None,
     };
     let laid = layout_entries(app, entries, inner.width as usize, &view);
     let total = laid.total();

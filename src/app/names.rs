@@ -21,6 +21,9 @@ impl App {
         let name = crate::text::sanitize(name.trim()).replace('\n', " ");
         let profile = self.config.active_profile.clone();
         self.config.active_mut().character = name.clone();
+        if let Some(s) = &mut self.speller {
+            s.learn(&name);
+        }
         self.config_changed();
         if name.is_empty() {
             self.toast(Level::Info, format!("Profile `{profile}` no longer has a character name."));
@@ -35,6 +38,9 @@ impl App {
         }
         let nick = crate::text::sanitize(nick.trim()).replace('\n', " ");
         self.partner_nick = (!nick.is_empty()).then_some(nick.clone());
+        if let Some(s) = &mut self.speller {
+            s.learn(&nick);
+        }
         self.logs.set_nick(self.session_id, self.partner_nick.clone());
         if nick.is_empty() {
             self.toast(Level::Info, "Nickname cleared.");

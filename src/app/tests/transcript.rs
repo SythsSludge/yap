@@ -116,3 +116,78 @@ fn emoji_shortcodes_complete_and_expand() {
     h.type_str(":sm");
     assert!(h.emoji_suggestions().is_none());
 }
+
+#[test]
+fn new_divider_marks_what_arrived_while_you_were_away() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.server(ServerMessage::ReceiveMessage("seen this".into()));
+    assert_eq!(h.chat.new_from, None, "you were looking");
+
+    h.set_focused(false);
+    h.server(ServerMessage::ReceiveMessage("while you were out".into()));
+    let first_new = h.chat.entries.len() - 1;
+    h.server(ServerMessage::ReceiveMessage("and this".into()));
+    assert_eq!(h.chat.new_from, Some(first_new));
+
+    // Back again: the divider stays put until you reply...
+    h.set_focused(true);
+    h.mark_seen();
+    assert_eq!(h.chat.new_from, Some(first_new));
+    // ...and the next time you're away it moves to the newer messages.
+    h.tab = Tab::Drawer;
+    h.server(ServerMessage::ReceiveMessage("later".into()));
+    assert_eq!(h.chat.new_from, Some(h.chat.entries.len() - 1));
+
+    h.tab = Tab::Chat;
+    h.type_str("back!");
+    h.press(KeyCode::Enter);
+    assert_eq!(h.chat.new_from, None);
+}
+
+#[test]
+fn average_words_follow_the_current_partner() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.server(ServerMessage::ReceiveMessage("one two three four".into()));
+    h.server(ServerMessage::ReceiveMessage("five six".into()));
+    h.type_str("hi - there");
+    h.press(KeyCode::Enter);
+    assert_eq!(h.chat.average_words(), (Some(3), Some(2)));
+    let mut h = h.partnered();
+    assert_eq!(h.chat.average_words(), (None, None), "a new partner starts over");
+    h.server(ServerMessage::ReceiveMessage("hello".into()));
+    assert_eq!(h.chat.average_words(), (Some(1), None));
+}
+
+#[test]
+fn spelling_fixes_and_learns_words() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.load_speller();
+    h.type_str("helo Zephyrine ");
+    assert_eq!(h.misspelled(), [(0, 4), (5, 14)]);
+
+    // alt+s on the word before the cursor offers fixes; Enter takes the first.
+    alt(&mut h, 's');
+    let Some(Modal::Spelling { word, suggestions, .. }) = &h.modal else { panic!("{:?}", h.modal) };
+    assert_eq!(word, "Zephyrine");
+    let add_row = suggestions.len();
+    for _ in 0..add_row {
+        h.press(KeyCode::Down);
+    }
+    h.press(KeyCode::Enter);
+    assert_eq!(h.config.settings.spell_words, ["Zephyrine"]);
+    assert_eq!(h.misspelled(), [(0, 4)]);
+
+    h.input.set_cursor(2);
+    alt(&mut h, 's');
+    let Some(Modal::Spelling { suggestions, .. }) = &h.modal else { panic!() };
+    let fix = suggestions[0].clone();
+    h.press(KeyCode::Enter);
+    assert_eq!(h.input.text(), format!("{fix} Zephyrine "));
+    assert!(h.misspelled().is_empty());
+
+    // Off means no dictionary and no underlines.
+    h.config.settings.spellcheck = false;
+    h.load_speller();
+    h.type_str("wrnog ");
+    assert!(h.misspelled().is_empty());
+}

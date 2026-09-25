@@ -85,3 +85,57 @@ fn cycling_chats_wraps() {
     h.run_command(Command::SwitchChat(2));
     assert_eq!(h.session_number(), 2);
 }
+
+#[test]
+fn each_chat_keeps_its_own_profile() {
+    let mut h = harness().online().with_prefs();
+    let mut other = complete_prefs();
+    other.toggle(Field::Species, "Wolf");
+    other.toggle(Field::Species, "Fox");
+    h.config.create_profile("vixen", other).unwrap();
+    h.config.settings.auto_requeue = true;
+    h.config.settings.requeue_delay_secs = 0;
+
+    h.run_command(Command::NewChat);
+    h.on_net_for(1, NetEvent::Open);
+    h.switch_profile("vixen");
+    assert!(h.mixed_profiles());
+    let labels: Vec<String> = h.sessions().into_iter().map(|s| s.profile).collect();
+    assert_eq!(labels, ["default", "vixen"]);
+
+    h.switch_session(0);
+    assert_eq!(h.config.active_profile, "default");
+    h.switch_session(1);
+    assert_eq!(h.config.active_profile, "vixen");
+
+    // A background chat searches again with its own profile, not the visible one.
+    h.switch_session(0);
+    h.take_effects();
+    let info = PartnerInfo {
+        gender: "Male".into(),
+        species: "Cat".into(),
+        kinks: "Musk".into(),
+        role: "Dominant".into(),
+        language: None,
+    };
+    h.on_net_for(1, NetEvent::Message(ServerMessage::PartnerConnected(info)));
+    h.on_net_for(1, NetEvent::Message(ServerMessage::PartnerLeft));
+    h.now += Duration::from_secs(1);
+    h.on_tick();
+    let find = h.take_tagged_effects().into_iter().find_map(|(id, e)| match e {
+        Effect::Send(ClientMessage::FindPartner(p)) => Some((id, p)),
+        _ => None,
+    });
+    let (id, prefs) = find.expect("chat 1 searched again");
+    assert_eq!(id, 1);
+    assert_eq!(prefs.user.species, "Fox");
+    assert_eq!(h.config.active_profile, "default", "the visible chat's profile is untouched");
+
+    // Renaming or deleting a profile keeps parked chats pointing somewhere real.
+    h.config.rename_profile("vixen", "fox").unwrap();
+    h.sync_session_profiles(Some(("vixen", "fox")));
+    assert_eq!(h.others[0].profile, "fox");
+    h.config.delete_profile("fox").unwrap();
+    h.sync_session_profiles(None);
+    assert_eq!(h.others[0].profile, "default");
+}

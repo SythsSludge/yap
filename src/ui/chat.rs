@@ -64,6 +64,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     draw_input(frame, app, input);
     draw_command_hints(frame, app, transcript);
     draw_emoji_hints(frame, app, transcript);
+    draw_snippet_hints(frame, app, transcript);
 }
 
 // ----- transcript layout ----------------------------------------------------------
@@ -191,6 +192,8 @@ pub(super) struct View<'a> {
     pub search: Option<&'a str>,
     /// Your messages that may not have arrived.
     pub unsure: &'a [usize],
+    /// Draw a "new" divider above this entry.
+    pub new_from: Option<usize>,
 }
 
 /// A laid-out transcript: the chunks, plus which chunks each entry produced.
@@ -262,6 +265,19 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, view: &
     let name_col = crate::text::width(&view.you).max(crate::text::width(&view.partner)).clamp(7, 16) + 2;
 
     for (index, entry) in entries.iter().enumerate() {
+        if view.new_from == Some(index) {
+            let label = " new ";
+            let side = width.saturating_sub(label.len()) / 2;
+            let rule = Style::new().fg(t.accent);
+            out.push(Chunk::Lines(vec![Line::default()]));
+            out.push(Chunk::Lines(vec![Line::from(vec![
+                Span::styled("─".repeat(side), rule.add_modifier(Modifier::DIM)),
+                Span::styled(label, rule.add_modifier(Modifier::BOLD)),
+                Span::styled("─".repeat(width.saturating_sub(side + label.len())), rule.add_modifier(Modifier::DIM)),
+            ])]));
+            // The next message starts its own group so its name shows under the line.
+            last_who = None;
+        }
         let first_chunk = out.len();
         let current = view.focus == Some(index);
         let time = s.timestamps.then(|| entry.at.format("%H:%M").to_string());
@@ -589,6 +605,7 @@ fn draw_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
         focus: app.chat.focus_entry(),
         search: search.as_deref(),
         unsure: &app.chat.unsure,
+        new_from: app.chat.new_from,
     };
     let laid = layout_entries(app, &app.chat.entries, content.width as usize, &view);
     let fill = view.focus.and_then(|e| laid.lines_of(e));
@@ -706,6 +723,11 @@ fn clock_rows(app: &App) -> Vec<Line<'static>> {
     if let Some(since) = app.clock.partner_since {
         lines.push(row("together", human_duration(ago(since).as_secs()), plain));
     }
+    let (theirs, mine) = app.chat.average_words();
+    if theirs.is_some() || mine.is_some() {
+        let n = |w: Option<usize>| w.map_or("–".to_owned(), |w| w.to_string());
+        lines.push(row("words", format!("them {} · you {}", n(theirs), n(mine)), plain));
+    }
     let heard = match app.clock.last_heard {
         Some(at) => {
             let quiet = ago(at);
@@ -785,8 +807,13 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
     let mut x = area.x;
     let mut spans = Vec::new();
+    let mixed = app.mixed_profiles();
     for s in app.sessions() {
-        let label = format!(" {} {} ", s.number, truncate(&s.label, 18));
+        let label = if mixed {
+            format!(" {} {} · {} ", s.number, truncate(&s.label, 14), truncate(&s.profile, 10))
+        } else {
+            format!(" {} {} ", s.number, truncate(&s.label, 18))
+        };
         let style = if s.active {
             Style::new().fg(t.fg).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else if s.online {
@@ -828,6 +855,12 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         block =
             block.title_top(Line::from(Span::styled(format!(" {count}/{MAX_MESSAGE_LEN} "), style)).right_aligned());
     }
+    let text = app.input.text();
+    let words = crate::app::chat::word_count(text);
+    if words > 0 && !(text.starts_with('/') && !text.starts_with("//")) {
+        let label = format!(" {words} word{} ", if words == 1 { "" } else { "s" });
+        block = block.title_bottom(Line::from(Span::styled(label, t.muted())).right_aligned());
+    }
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.hit(area, Hit::Input);
@@ -849,7 +882,19 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     let visible = text_area.height as usize;
     let first = (crow + 1).saturating_sub(visible);
     if !app.input.is_empty() {
-        let lines: Vec<Line> = rows.iter().skip(first).take(visible).map(|r| Line::from(r.clone())).collect();
+        let bad = app.misspelled();
+        let wrong = Style::new().fg(t.error).add_modifier(Modifier::UNDERLINED);
+        // Rows are consecutive slices of the text, so their byte offsets add up.
+        let mut offset = 0;
+        let mut lines = Vec::new();
+        for (i, row) in rows.iter().enumerate() {
+            let start = offset;
+            offset += row.len();
+            if i < first || i >= first + visible {
+                continue;
+            }
+            lines.push(Line::from(styled_ranges(row, start, &bad, wrong)));
+        }
         frame.render_widget(Paragraph::new(lines).style(Style::new().fg(t.fg)), text_area);
     }
     if focused && visible > 0 && text_area.width > 0 {
@@ -886,6 +931,60 @@ fn draw_search_bar(frame: &mut Frame, app: &App, area: Rect, search: &crate::app
         let x = (width(&search.query) as u16 + 2).min(inner.width - 1);
         frame.set_cursor_position(Position::new(inner.x + x, inner.y));
     }
+}
+
+/// Split `row` (starting at byte `offset` of the whole text) into spans, giving the
+/// parts inside `ranges` the `marked` style.
+fn styled_ranges(row: &str, offset: usize, ranges: &[(usize, usize)], marked: Style) -> Vec<Span<'static>> {
+    let end = offset + row.len();
+    let mut spans = Vec::new();
+    let mut at = offset;
+    for &(s, e) in ranges.iter().filter(|(s, e)| *s < end && *e > offset) {
+        let (s, e) = (s.max(offset), e.min(end));
+        if s > at {
+            spans.push(Span::raw(row[at - offset..s - offset].to_owned()));
+        }
+        spans.push(Span::styled(row[s - offset..e - offset].to_owned(), marked));
+        at = e;
+    }
+    if at < end {
+        spans.push(Span::raw(row[at - offset..].to_owned()));
+    }
+    spans
+}
+
+/// While typing `;intr…`, offer matching snippets just above the input.
+fn draw_snippet_hints(frame: &mut Frame, app: &App, transcript: Rect) {
+    let Some((_, found)) = app.snippet_suggestions() else { return };
+    if app.modal.is_some() || transcript.height < found.len() as u16 + 2 {
+        return;
+    }
+    let t = &app.theme;
+    let box_w = transcript.width.saturating_sub(4).min(74);
+    let h = found.len() as u16;
+    let rect = Rect::new(transcript.x + 2, transcript.bottom() - h, box_w, h);
+    let lines: Vec<Line> = found
+        .iter()
+        .enumerate()
+        .map(|(i, &index)| {
+            let snippet = &app.drawer.snippets[index];
+            let (key, style) = if i == 0 {
+                ("tab ", Style::new().fg(t.accent).add_modifier(Modifier::BOLD))
+            } else {
+                ("    ", Style::new().fg(t.fg))
+            };
+            let name = format!(";{:<15}", snippet.name);
+            let preview = app.filled_snippet(index).unwrap_or_default();
+            let room = (box_w as usize).saturating_sub(5 + width(&name));
+            Line::from(vec![
+                Span::styled(format!(" {key}"), style),
+                Span::styled(name, style),
+                Span::styled(truncate(&preview, room), t.muted()),
+            ])
+        })
+        .collect();
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(lines).style(Style::new().bg(t.surface)), rect);
 }
 
 /// While typing `:smi…`, offer matching emoji just above the input.
