@@ -106,6 +106,9 @@ impl App {
         self.reset_partner();
         self.can_block_previous = had_partner;
         self.partner = PartnerState::Searching;
+        if searching_since.is_none() {
+            self.buddy_event(crate::buddy::Event::Searching);
+        }
         self.clock.searching_since = searching_since.or(Some(self.now));
         self.requeue_at = None;
         if !self.background {
@@ -156,7 +159,8 @@ impl App {
         }
     }
 
-    fn send_chat(&mut self, text: String) {
+    pub(super) fn send_chat(&mut self, text: String) {
+        let text = crate::input::join_lines(&text, &self.config.settings.paragraph_break);
         let text = if self.config.settings.emoji_shortcodes { crate::emoji::expand(&text) } else { text };
         // Same checks, order and messages as the web client. JS counts UTF-16 units.
         if text.is_empty() {
@@ -177,7 +181,9 @@ impl App {
         self.count(|s| s.sent += 1);
         self.input.submit();
         self.request_images(&text);
+        let long = crate::app::chat::word_count(&text) >= 80;
         self.push(EntryKind::You(text));
+        self.buddy_event(if long { crate::buddy::Event::LongPost } else { crate::buddy::Event::Sent });
         self.chat.new_from = None;
         self.chat.follow();
     }
@@ -211,6 +217,7 @@ impl App {
         self.toasts.retain(|t| t.expires > now);
         self.tick_sessions();
         self.tick_reload();
+        self.show_next_ai_send();
     }
 
     /// Timers for the current session: typing idle and reconnect backoff.
@@ -273,6 +280,20 @@ impl App {
             Command::Search(query) => self.start_search(query.as_deref()),
             Command::Select => self.select_message(None),
             Command::Stats => self.modal = Some(Modal::Stats),
+            Command::Buddy(name) => self.set_buddy(name.as_deref()),
+            Command::Backup(path) => {
+                self.flush();
+                let path = config::expand_tilde(&path);
+                match crate::backup::Backup::create(&self.paths, false).and_then(|b| b.write(&path).map(|()| b)) {
+                    Ok(b) => self.toast(
+                        Level::Success,
+                        format!("Backed up {} files to {}. Restore with `yap restore`.", b.files.len(), path.display()),
+                    ),
+                    Err(e) => self.toast(Level::Error, format!("Backup failed: {e:#}")),
+                }
+            }
+            Command::Dict(args) => self.dict_command(args.as_deref().unwrap_or_default()),
+            Command::Emoji => self.modal = Some(Modal::Emoji { query: String::new(), selected: 0 }),
             Command::History => self.modal = Some(Modal::History { scroll: 0 }),
             Command::Kinks => self.open_kinks(),
             Command::DrawerExport(path) => self.export_drawer(&path),

@@ -155,3 +155,50 @@ fn outside_edits_to_config_and_themes_are_picked_up() {
     assert!(h.themes.iter().any(|t| t.name == "mine"));
     assert_eq!(h.last_toast(), Some("Reloaded themes."));
 }
+
+#[test]
+fn ui_tweaks_behave() {
+    // Errors stay until Esc; other toasts fade.
+    let mut h = harness();
+    h.toast(Level::Error, "boom");
+    h.toast(Level::Info, "fyi");
+    h.now += Duration::from_secs(30);
+    h.on_tick();
+    assert_eq!(h.toasts.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(), ["boom"]);
+    h.press(KeyCode::Esc);
+    assert!(h.toasts.is_empty());
+
+    // The title counts unseen messages.
+    let mut h = harness().online().with_prefs().partnered();
+    h.tab = Tab::Drawer;
+    h.server(ServerMessage::ReceiveMessage("hi".into()));
+    assert_eq!(h.window_title().rsplit(" · ").next(), Some("(1) yap"));
+
+    // Narrow terminals toggle an overlay instead of the setting.
+    h.tab = Tab::Chat;
+    h.narrow = true;
+    h.ctrl('s');
+    assert!(h.sidebar_overlay);
+    assert!(h.config.settings.show_sidebar, "the saved setting is left alone");
+
+    // The welcome leads to the first thing to fill in.
+    let mut h = harness();
+    h.welcome();
+    h.press(KeyCode::Enter);
+    assert_eq!(h.tab, Tab::Preferences);
+    assert_eq!(Field::ALL[h.prefs_ui.field], Field::Gender);
+}
+
+#[test]
+fn footer_hints_are_clickable() {
+    let mut h = harness().online().with_prefs();
+    frame(&mut h);
+    let find = h.keymap.hint(crate::keymap::Action::Find).unwrap();
+    click_on(&mut h, &Hit::HintKey(find));
+    assert!(find_payload(&h.sent()).is_some(), "clicking ^F find searches");
+
+    h.tab = Tab::Drawer;
+    frame(&mut h);
+    click_on(&mut h, &Hit::HintKey("a".into()));
+    assert!(matches!(h.modal, Some(Modal::Prompt(_))), "clicking `a add` adds");
+}

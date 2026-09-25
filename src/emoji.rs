@@ -2,6 +2,9 @@
 
 use std::sync::OnceLock;
 
+/// Emoji per row in the picker.
+pub const PICKER_COLUMNS: usize = 12;
+
 /// Every shortcode with its emoji, shortest first so the likeliest match comes first.
 ///
 /// Sequences joined with a zero-width joiner are left out: terminals disagree about how
@@ -62,6 +65,51 @@ pub fn partial(text: &str, cursor: usize) -> Option<(usize, &str)> {
     (starts_word && word.len() >= 2 && word.chars().all(is_code_char)).then_some((open, word))
 }
 
+/// One emoji in the picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pick {
+    pub emoji: &'static str,
+    pub code: &'static str,
+    pub name: &'static str,
+    pub group: &'static str,
+}
+
+fn group_name(group: emojis::Group) -> &'static str {
+    use emojis::Group::*;
+    match group {
+        SmileysAndEmotion => "smileys",
+        PeopleAndBody => "people",
+        AnimalsAndNature => "animals & nature",
+        FoodAndDrink => "food & drink",
+        TravelAndPlaces => "travel & places",
+        Activities => "activities",
+        Objects => "objects",
+        Symbols => "symbols",
+        Flags => "flags",
+    }
+}
+
+/// Emoji for the picker, in the standard order, narrowed by `query` (matching the
+/// shortcode or the name).
+pub fn picks(query: &str) -> Vec<Pick> {
+    static ALL: OnceLock<Vec<Pick>> = OnceLock::new();
+    let all = ALL.get_or_init(|| {
+        emojis::iter()
+            .filter(|e| !e.as_str().contains('\u{200d}'))
+            .filter_map(|e| {
+                Some(Pick { emoji: e.as_str(), code: e.shortcode()?, name: e.name(), group: group_name(e.group()) })
+            })
+            .collect()
+    });
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return all.clone();
+    }
+    let starts = all.iter().filter(|p| p.code.starts_with(&q));
+    let rest = all.iter().filter(|p| !p.code.starts_with(&q) && (p.code.contains(&q) || p.name.contains(&q)));
+    starts.chain(rest).copied().collect()
+}
+
 /// Shortcodes starting with `prefix`, then ones containing it: `(code, emoji)`.
 pub fn suggest(prefix: &str, limit: usize) -> Vec<(&'static str, &'static str)> {
     let table = table();
@@ -97,6 +145,15 @@ mod tests {
         assert_eq!(partial("10:30", 5), None, "not at the start of a word");
         assert_eq!(partial("hi :smile: ok", 13), None);
         assert_eq!(partial("hi :smi later", 7), Some((3, "smi")));
+    }
+
+    #[test]
+    fn picker_searches_codes_and_names() {
+        assert!(picks("").len() > 1000);
+        let hearts = picks("heart");
+        assert!(hearts[0].code.starts_with("heart"));
+        assert!(picks("grinning face").iter().any(|p| p.emoji == "😀"));
+        assert!(picks("").iter().all(|p| !p.emoji.contains('\u{200d}')));
     }
 
     #[test]

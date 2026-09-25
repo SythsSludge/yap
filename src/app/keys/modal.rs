@@ -140,6 +140,81 @@ impl App {
                     None
                 }
             }
+            Modal::Emoji { mut query, mut selected } => {
+                let len = crate::emoji::picks(&query).len();
+                let cols = crate::emoji::PICKER_COLUMNS as isize;
+                match key.code {
+                    KeyCode::Esc => None,
+                    KeyCode::Enter => {
+                        if let Some(p) = crate::emoji::picks(&query).get(selected) {
+                            let emoji = p.emoji;
+                            self.input.insert_str(emoji);
+                            self.tab = Tab::Chat;
+                            self.chat_focus = ChatFocus::Input;
+                            self.input_changed();
+                        }
+                        None
+                    }
+                    KeyCode::Left => {
+                        step(&mut selected, len, -1);
+                        Some(Modal::Emoji { query, selected })
+                    }
+                    KeyCode::Right | KeyCode::Tab => {
+                        step(&mut selected, len, 1);
+                        Some(Modal::Emoji { query, selected })
+                    }
+                    KeyCode::Up => {
+                        step(&mut selected, len, -cols);
+                        Some(Modal::Emoji { query, selected })
+                    }
+                    KeyCode::Down => {
+                        step(&mut selected, len, cols);
+                        Some(Modal::Emoji { query, selected })
+                    }
+                    KeyCode::PageUp => {
+                        step(&mut selected, len, -cols * 6);
+                        Some(Modal::Emoji { query, selected })
+                    }
+                    KeyCode::PageDown => {
+                        step(&mut selected, len, cols * 6);
+                        Some(Modal::Emoji { query, selected })
+                    }
+                    KeyCode::Backspace => {
+                        query.pop();
+                        Some(Modal::Emoji { query, selected: 0 })
+                    }
+                    KeyCode::Char(c) if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+                        query.push(c);
+                        Some(Modal::Emoji { query, selected: 0 })
+                    }
+                    _ => Some(Modal::Emoji { query, selected }),
+                }
+            }
+            Modal::AiSend(send) => match key.code {
+                KeyCode::Char('y' | 'Y') | KeyCode::Enter => {
+                    self.answer_ai_send(send, true);
+                    None
+                }
+                KeyCode::Char('n' | 'N') | KeyCode::Esc => {
+                    self.answer_ai_send(send, false);
+                    None
+                }
+                KeyCode::Char('e') => {
+                    // Take it into the message box to edit, instead of sending as is.
+                    let text = send.text.clone();
+                    self.answer_ai_send(send, false);
+                    self.input.set(&text);
+                    self.input_changed();
+                    None
+                }
+                _ => Some(Modal::AiSend(send)),
+            },
+            Modal::Welcome => {
+                if key.code == KeyCode::Enter {
+                    self.start_setup();
+                }
+                None
+            }
             Modal::Stats => match key.code {
                 KeyCode::Char('h') => Some(Modal::History { scroll: 0 }),
                 _ => None,

@@ -5,7 +5,10 @@
 //! everything here testable without a terminal or socket.
 
 mod actions;
+mod ai;
+mod buddy;
 pub mod chat;
+mod completion;
 mod compose;
 mod connection;
 mod export;
@@ -23,13 +26,19 @@ mod sessions;
 pub mod settings;
 mod snippets;
 mod spelling;
+mod split;
+mod tabs;
 mod transcript;
 
+pub use ai::{AiOutcome, AiSend};
+pub use buddy::BuddyState;
 pub use compose::{join_paragraphs, split_paragraphs};
 pub use kinks::KinkGroups;
 pub use mouse::{Hit, ListId, ViewerButton};
 pub use palette::{PaletteEntry, PaletteItem};
 pub use sessions::{Session, SessionSummary};
+pub use split::{Pane, Split};
+pub use tabs::Tabs;
 pub use transcript::quote;
 
 pub use keys::prefs_options;
@@ -54,13 +63,14 @@ use chrono::Local;
 use modal::{Confirm, Modal, Prompt, PromptAction};
 use ratatui_image::picker::Picker;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Stop showing "typing" to the partner after this long without a keystroke.
 pub const TYPING_IDLE: Duration = Duration::from_secs(5);
 const TOAST_TTL: Duration = Duration::from_secs(6);
+const ERROR_TTL: Duration = Duration::from_secs(60 * 60);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Messages sent this soon before a partner leaves may have been dropped.
 const UNDELIVERED_WINDOW: chrono::TimeDelta = chrono::TimeDelta::seconds(2);
@@ -121,6 +131,13 @@ pub enum Effect {
     Bell,
     /// Run a shell command that plays a notification sound.
     PlaySound(String),
+    /// Download a spellcheck dictionary (`/dict get`).
+    FetchDictionary(String),
+    /// Answer an AI tool call that was waiting on you.
+    AiResolved {
+        id: u64,
+        result: Result<serde_json::Value, String>,
+    },
     /// Suspend the UI and edit `text` in an external editor.
     OpenEditor {
         command: String,
@@ -282,6 +299,14 @@ pub struct App {
     pub tab: Tab,
     pub chat_focus: ChatFocus,
     pub drawer_panel: bool,
+    /// The sidebar drawn over the chat, for terminals too narrow to show it beside.
+    pub sidebar_overlay: bool,
+    /// Set by the renderer: the chat is too narrow for the sidebar.
+    pub narrow: bool,
+    /// Split view, when on.
+    pub split: Option<Split>,
+    /// The tab list as last written to disk.
+    saved_tabs: Option<Tabs>,
     pub modal: Option<Modal>,
     pub viewer: Option<Viewer>,
     pub toasts: Vec<Toast>,
@@ -295,8 +320,18 @@ pub struct App {
     dirty_stats: bool,
     /// Everyone you've met (see `history.rs`).
     pub history: crate::history::History,
+    /// How busy the site is and how long searches take, by hour (see `activity.rs`).
+    pub activity: crate::activity::Activity,
+    dirty_activity: bool,
     /// The loaded dictionary, when spellcheck is on and one was found.
     pub speller: Option<crate::spell::Speller>,
+    /// Built-in and your own buddies, and how the one on screen is feeling.
+    pub buddies: Vec<crate::buddy::Buddy>,
+    pub buddy_state: BuddyState,
+    /// When an AI app last used yap, and messages it wants sent (waiting for your yes).
+    ai_seen: Option<Instant>,
+    ai_sends: std::collections::VecDeque<AiSend>,
+    next_ai_id: u64,
     pub logs_ui: LogsUi,
     /// A resizable copy of the drawer's selected image, for its preview pane.
     pub drawer_preview: Option<(String, ratatui_image::protocol::StatefulProtocol)>,
@@ -377,6 +412,10 @@ impl App {
             tab: Tab::Chat,
             chat_focus: ChatFocus::Input,
             drawer_panel: false,
+            sidebar_overlay: false,
+            narrow: false,
+            split: None,
+            saved_tabs: None,
             modal: None,
             viewer: None,
             toasts: Vec::new(),
@@ -388,7 +427,14 @@ impl App {
             run_stats: crate::stats::Stats::starting(Local::now()),
             dirty_stats: false,
             history: Default::default(),
+            activity: Default::default(),
+            dirty_activity: false,
             speller: None,
+            buddies: crate::buddy::builtins(),
+            buddy_state: BuddyState::new(Instant::now()),
+            ai_seen: None,
+            ai_sends: Default::default(),
+            next_ai_id: 0,
             logs_ui: LogsUi::default(),
             drawer_preview: None,
             traffic,
@@ -430,7 +476,9 @@ impl App {
     pub fn toast(&mut self, level: Level, text: impl Into<String>) {
         let text = text.into();
         self.toasts.retain(|t| t.text != text);
-        self.toasts.push(Toast { text, level, expires: self.now + TOAST_TTL });
+        // Errors stay until dismissed (Esc or a click), so they can't be missed.
+        let ttl = if level == Level::Error { ERROR_TTL } else { TOAST_TTL };
+        self.toasts.push(Toast { text, level, expires: self.now + ttl });
         if self.toasts.len() > 4 {
             self.toasts.remove(0);
         }
@@ -517,12 +565,18 @@ impl App {
         {
             self.toast(Level::Error, format!("couldn't save drawer: {e:#}"));
         }
+        self.save_tabs();
         if self.history.is_dirty()
             && let Err(e) = self.history.save(&self.paths.history_file)
         {
             self.config.settings.keep_history = false;
             self.config_changed();
             self.toast(Level::Error, format!("Partner history turned off: {e:#}"));
+        }
+        if std::mem::take(&mut self.dirty_activity)
+            && let Err(e) = self.activity.save(&self.paths.activity_file)
+        {
+            self.toast(Level::Error, format!("couldn't save activity: {e:#}"));
         }
         if std::mem::take(&mut self.dirty_stats)
             && let Err(e) = self.stats.save(&self.paths.stats_file)

@@ -4,7 +4,7 @@
 use super::{Rows, columns, render_list, section};
 use crate::app::chat::ChatMode;
 use crate::app::chat::{Entry, EntryKind};
-use crate::app::{App, ChatFocus, Hit, ListId, PartnerState};
+use crate::app::{App, ChatFocus, Hit, ListId, Pane, PartnerState, Split};
 use crate::catalog::{ANY, MAX_MESSAGE_LEN};
 use crate::config::ChatStyle;
 use crate::images::{ImageState, Loaded};
@@ -14,6 +14,7 @@ use crate::prefs::Field;
 use crate::stats::human_duration;
 use crate::text::{Markup, find_keywords, roleplay_markup, truncate, width, wrap};
 use crate::theme::Theme;
+use chrono::{DateTime, Local};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
@@ -25,12 +26,20 @@ use std::sync::Arc;
 const SIDEBAR_WIDTH: u16 = 28;
 const DRAWER_WIDTH: u16 = 32;
 const MAX_INPUT_ROWS: usize = 6;
+/// Narrower than this, a split shows only the chat you're typing in.
+const SPLIT_MIN_WIDTH: u16 = 100;
 /// A partner this quiet shows their last-heard time as a warning.
 const QUIET: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     app.mark_seen();
-    let show_sidebar = app.config.settings.show_sidebar && area.width >= 90;
+    if let Some(split) = app.split
+        && area.width >= SPLIT_MIN_WIDTH
+    {
+        return draw_split(frame, app, area, split);
+    }
+    app.narrow = area.width < 90;
+    let show_sidebar = app.config.settings.show_sidebar && !app.narrow;
     let show_drawer = app.drawer_panel && area.width >= 60;
     let cols = columns(
         frame,
@@ -48,23 +57,147 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         draw_sessions(frame, app, Rect::new(strip.x, strip.y, strip.width, 1));
         middle = rest;
     }
-
-    let input_width = middle.width.saturating_sub(6).max(1) as usize;
-    let (rows, _) = app.input.layout(input_width);
-    let input_height = rows.len().clamp(1, MAX_INPUT_ROWS) as u16 + 2;
-    let [transcript, input] = Layout::vertical([Constraint::Min(3), Constraint::Length(input_height)]).areas(middle);
-
     if show_sidebar {
         draw_sidebar(frame, app, sidebar);
     }
-    draw_transcript(frame, app, transcript);
     if show_drawer {
         draw_drawer_panel(frame, app, drawer);
     }
+    draw_live(frame, app, middle);
+    // Too narrow to sit beside the chat: drawn over it instead, while toggled on.
+    if app.narrow && app.sidebar_overlay {
+        let w = (SIDEBAR_WIDTH + 2).min(area.width);
+        let rect = Rect::new(area.x, area.y, w, area.height.saturating_sub(3));
+        frame.render_widget(Clear, rect);
+        frame.render_widget(Block::new().style(super::float_style(app)), rect);
+        draw_sidebar(frame, app, rect.inner(ratatui::layout::Margin::new(1, 0)));
+    }
+}
+
+/// The visible chat: transcript, message box and the completion popups.
+fn draw_live(frame: &mut Frame, app: &mut App, middle: Rect) {
+    // The buddy sits to the right of the message box, when there's room.
+    let buddy_w = app.buddy().filter(|_| middle.width >= 60).map_or(0, |b| b.width() as u16 + 3);
+    let input_width = middle.width.saturating_sub(6 + buddy_w).max(1) as usize;
+    let (rows, _) = app.input.layout(input_width);
+    let input_height = rows.len().clamp(1, MAX_INPUT_ROWS) as u16 + 2;
+    let [transcript, input_row] =
+        Layout::vertical([Constraint::Min(3), Constraint::Length(input_height)]).areas(middle);
+    let [input, buddy] = Layout::horizontal([Constraint::Min(10), Constraint::Length(buddy_w)]).areas(input_row);
+    draw_transcript(frame, app, transcript);
     draw_input(frame, app, input);
+    if buddy_w > 0 {
+        draw_buddy(frame, app, buddy, transcript);
+    }
     draw_command_hints(frame, app, transcript);
+    draw_arg_hints(frame, app, transcript);
     draw_emoji_hints(frame, app, transcript);
     draw_snippet_hints(frame, app, transcript);
+}
+
+/// The buddy, and its speech bubble just above it (over the transcript's corner).
+fn draw_buddy(frame: &mut Frame, app: &App, area: Rect, above: Rect) {
+    let t = &app.theme;
+    let color = app.buddy().and_then(|b| b.color).unwrap_or(t.accent);
+    let lines: Vec<Line> =
+        app.buddy_frame().into_iter().map(|l| Line::from(Span::styled(l, Style::new().fg(color)))).collect();
+    let h = (lines.len() as u16).min(area.height);
+    let art = Rect::new(area.x + 2, area.bottom() - h, area.width.saturating_sub(2), h);
+    frame.render_widget(Paragraph::new(lines), art);
+    app.hit(area, Hit::Buddy);
+
+    let Some(text) = app.buddy_speech() else { return };
+    let wrapped = wrap(&[Span::styled(text.to_owned(), Style::new().fg(t.fg))], 26, 0);
+    let w = (wrapped.iter().map(Line::width).max().unwrap_or(0) as u16 + 4).min(above.width);
+    let h = wrapped.len() as u16 + 2;
+    if above.height < h + 2 || w < 6 {
+        return;
+    }
+    // One row up, leaving the transcript's bottom row for the "new messages" badge.
+    let right = area.right().min(above.right());
+    let bubble = Rect::new(right.saturating_sub(w), above.bottom() - h - 1, w, h);
+    let block =
+        super::popup_block(app, t.surface, Style::new().fg(color)).padding(ratatui::widgets::Padding::horizontal(1));
+    super::popup_fill(frame, app, bubble, t.surface);
+    frame.render_widget(Paragraph::new(wrapped).block(block), bubble);
+}
+
+// ----- split view -----------------------------------------------------------------
+
+/// Two panes: the chat you're typing in, and another chat or the traffic log.
+fn draw_split(frame: &mut Frame, app: &mut App, mut area: Rect, split: Split) {
+    if app.session_count() > 1 && area.height > 6 {
+        let [strip, rest] = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).areas(area);
+        draw_sessions(frame, app, Rect::new(strip.x, strip.y, strip.width, 1));
+        area = rest;
+    }
+    let cols = columns(frame, app, area, &[Constraint::Percentage(50), Constraint::Percentage(50)]);
+    let left_active = split.left == app.session_id;
+    let (active, passive) = if left_active { (cols[0], cols[1]) } else { (cols[1], cols[0]) };
+    let other = if left_active { split.right } else { Pane::Session(split.left) };
+
+    let title = pane_title(app, app.session_id, true);
+    let body = section(frame, app, active, title, true);
+    draw_live(frame, app, body);
+    match other {
+        Pane::Traffic => {
+            let body = section(frame, app, passive, "traffic", false);
+            super::traffic::draw(frame, app, body);
+        }
+        Pane::Session(id) => {
+            let title = pane_title(app, id, false);
+            let body = section(frame, app, passive, title, false);
+            draw_parked(frame, app, body, id);
+            // Clicks anywhere on it switch to it (rather than acting on its messages).
+            app.hit(passive, Hit::Pane(id));
+        }
+    }
+}
+
+fn pane_title(app: &App, id: u64, active: bool) -> Line<'static> {
+    let t = &app.theme;
+    let summary = app.sessions().into_iter().find(|s| s.id == id);
+    let (number, label) = summary.map_or((0, String::new()), |s| (s.number, s.label));
+    let mut spans = vec![Span::raw(format!("chat {number} · {label}"))];
+    if !active && let Some(key) = app.keymap.hint(Action::OtherPane) {
+        spans.push(Span::styled(format!(" · {key} to type here"), t.muted().add_modifier(Modifier::DIM)));
+    }
+    Line::from(spans)
+}
+
+/// A chat that isn't the one you're typing in: its newest messages and its draft.
+fn draw_parked(frame: &mut Frame, app: &mut App, area: Rect, id: u64) {
+    let Some(pos) = app.others.iter().position(|s| s.id == id) else { return };
+    app.others[pos].unseen = 0;
+    let t = app.theme.clone();
+    let [transcript, input] = Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).areas(area);
+    let s = &app.others[pos];
+    let character = app.config.profiles.iter().find(|p| p.name == s.profile).map(|p| p.character.trim());
+    let view = View {
+        you: character.filter(|c| !c.is_empty()).unwrap_or("you").to_owned(),
+        partner: s.partner_nick.clone().unwrap_or_else(|| "partner".into()),
+        typing: s.chat.partner_typing,
+        focus: None,
+        search: None,
+        unsure: &s.chat.unsure,
+        new_from: s.chat.new_from,
+        labels: Vec::new(),
+        dots: 3,
+    };
+    let content = Rect::new(transcript.x + 1, transcript.y, transcript.width.saturating_sub(2), transcript.height);
+    if s.chat.entries.is_empty() {
+        let note = Paragraph::new(Span::styled("nothing here yet", t.muted()));
+        frame.render_widget(note, content);
+    } else {
+        let laid = layout_entries(app, &s.chat.entries, content.width as usize, &view);
+        let top = laid.total().saturating_sub(content.height as usize);
+        render_chunks(frame, app, content, &laid.chunks, top, None);
+    }
+    let draft = s.input.text().lines().next().unwrap_or_default();
+    let block = Block::bordered().border_type(BorderType::Rounded).border_style(t.muted().add_modifier(Modifier::DIM));
+    let shown =
+        if draft.is_empty() { Span::styled("…", t.muted()) } else { Span::styled(draft.to_owned(), t.muted()) };
+    frame.render_widget(Paragraph::new(Line::from(vec![Span::styled("> ", t.muted()), shown])).block(block), input);
 }
 
 // ----- transcript layout ----------------------------------------------------------
@@ -96,6 +229,48 @@ impl Chunk {
 
 pub(super) fn total_height(chunks: &[Chunk]) -> usize {
     chunks.iter().map(Chunk::height).sum()
+}
+
+/// Pauses at least this long get a time line in the transcript.
+const GAP: chrono::TimeDelta = chrono::TimeDelta::minutes(10);
+
+fn width_of_label(label: &str) -> usize {
+    width(label) + 2
+}
+
+/// What to mark between two entries: the day when it changes, the time after a
+/// long pause, or nothing.
+fn gap_label(prev: DateTime<Local>, next: DateTime<Local>) -> Option<String> {
+    if next.date_naive() != prev.date_naive() {
+        let today = Local::now().date_naive();
+        let day = next.date_naive();
+        return Some(if day == today {
+            "Today".into()
+        } else if today.pred_opt() == Some(day) {
+            "Yesterday".into()
+        } else {
+            next.format("%a %-d %b").to_string()
+        });
+    }
+    (next - prev >= GAP).then(|| next.format("%H:%M").to_string())
+}
+
+/// Put link-hint letters in front of the links they label. `labels` are byte offsets
+/// into the message, which always fall on span boundaries (links are cut out).
+fn with_hint_labels(spans: Vec<Span<'static>>, labels: &[(usize, char)], style: Style) -> Vec<Span<'static>> {
+    if labels.is_empty() {
+        return spans;
+    }
+    let mut out = Vec::with_capacity(spans.len() + labels.len());
+    let mut at = 0;
+    for span in spans {
+        if let Some(&(_, label)) = labels.iter().find(|(start, _)| *start == at) {
+            out.push(Span::styled(format!(" {label} "), style));
+        }
+        at += span.content.len();
+        out.push(span);
+    }
+    out
 }
 
 /// Split text into styled spans: links in `link`, and each mark's style patched over
@@ -194,6 +369,10 @@ pub(super) struct View<'a> {
     pub unsure: &'a [usize],
     /// Draw a "new" divider above this entry.
     pub new_from: Option<usize>,
+    /// Link hint letters: (entry, byte offset of the link, letter).
+    pub labels: Vec<(usize, usize, char)>,
+    /// How many dots of "is typing..." to show (1-3).
+    pub dots: usize,
 }
 
 /// A laid-out transcript: the chunks, plus which chunks each entry produced.
@@ -208,6 +387,17 @@ impl Laid {
     }
 
     /// The transcript lines `[start, end)` an entry occupies.
+    /// The first and last entries with any line inside `[top, top + height)`.
+    pub fn visible_entries(&self, top: usize, height: usize) -> Option<(usize, usize)> {
+        let on_screen: Vec<usize> = self
+            .entry_chunks
+            .iter()
+            .map(|&(e, _, _)| e)
+            .filter(|&e| self.lines_of(e).is_some_and(|(s, end)| s < top + height && end > top))
+            .collect();
+        Some((*on_screen.first()?, *on_screen.last()?))
+    }
+
     pub fn lines_of(&self, entry: usize) -> Option<(usize, usize)> {
         let &(_, first, last) = self.entry_chunks.iter().find(|(e, _, _)| *e == entry)?;
         let start = total_height(&self.chunks[..first]);
@@ -233,7 +423,12 @@ fn marks_for(app: &App, text: &str, partner: bool, view: &View, current: bool) -
     }
     if partner {
         let style = Style::new().fg(t.highlight).add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-        marks.extend(find_keywords(text, &s.notify.keywords).into_iter().map(|(a, b)| (a, b, style)));
+        // Your keywords, and your character's name when the partner uses it.
+        let mut words = s.notify.keywords.clone();
+        if !view.you.eq_ignore_ascii_case("you") {
+            words.push(view.you.clone());
+        }
+        marks.extend(find_keywords(text, &words).into_iter().map(|(a, b)| (a, b, style)));
     }
     if let Some(query) = view.search.map(str::to_lowercase).filter(|q| !q.is_empty()) {
         let lower = text.to_lowercase();
@@ -264,7 +459,21 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, view: &
     let mut last_who: Option<Who> = None;
     let name_col = crate::text::width(&view.you).max(crate::text::width(&view.partner)).clamp(7, 16) + 2;
 
+    let mut previous: Option<DateTime<Local>> = None;
     for (index, entry) in entries.iter().enumerate() {
+        // A quiet line where the day changes or after a long pause.
+        if let Some(label) = previous.and_then(|prev| gap_label(prev, entry.at)) {
+            let side = width.saturating_sub(width_of_label(&label)) / 2;
+            let rule = t.muted().add_modifier(Modifier::DIM);
+            out.push(Chunk::Lines(vec![Line::default()]));
+            out.push(Chunk::Lines(vec![Line::from(vec![
+                Span::styled("─".repeat(side.saturating_sub(1)), rule),
+                Span::styled(format!(" {label} "), t.muted()),
+                Span::styled("─".repeat(width.saturating_sub(side + width_of_label(&label) + 1)), rule),
+            ])]));
+            last_who = None;
+        }
+        previous = Some(entry.at);
         if view.new_from == Some(index) {
             let label = " new ";
             let side = width.saturating_sub(label.len()) / 2;
@@ -349,6 +558,9 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, view: &
         let links: Vec<String> = find_links(text).into_iter().map(|l| l.url).collect();
         let marks = marks_for(app, text, who == Who::Partner, view, current);
         let message = |lines| Chunk::Message { lines, entry: index, links: links.clone() };
+        let labels: Vec<(usize, char)> =
+            view.labels.iter().filter(|(e, _, _)| *e == index).map(|&(_, at, c)| (at, c)).collect();
+        let hint = Style::new().fg(t.selection_fg).bg(t.accent).add_modifier(Modifier::BOLD);
 
         let image_x: u16 = match style {
             ChatStyle::Cozy => {
@@ -360,7 +572,8 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, view: &
                     }
                     out.push(Chunk::Lines(vec![Line::from(header)]));
                 }
-                let spans = message_spans(text, Style::new().fg(t.fg), t.link(), &marks);
+                let spans =
+                    with_hint_labels(message_spans(text, Style::new().fg(t.fg), t.link(), &marks), &labels, hint);
                 out.push(message(wrap(&spans, width, 2)));
                 2
             }
@@ -373,7 +586,8 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, view: &
                 }
                 let shown = if new_group { truncate(name, name_col - 2) } else { String::new() };
                 prefix.push(Span::styled(format!("{shown:<w$}", w = name_col), name_style));
-                let spans = message_spans(text, Style::new().fg(t.fg), t.link(), &marks);
+                let spans =
+                    with_hint_labels(message_spans(text, Style::new().fg(t.fg), t.link(), &marks), &labels, hint);
                 out.push(message(hanging(prefix, indent, &spans, width)));
                 indent as u16
             }
@@ -395,7 +609,8 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, view: &
                 let max_inner = (width * 3 / 4).max(8).min(width.saturating_sub(2)).max(1);
                 let base = Style::new().fg(fg).bg(bg);
                 let link = base.add_modifier(Modifier::UNDERLINED);
-                let wrapped = wrap(&message_spans(text, base, link, &marks), max_inner, 0);
+                let wrapped =
+                    wrap(&with_hint_labels(message_spans(text, base, link, &marks), &labels, hint), max_inner, 0);
                 let inner = wrapped.iter().map(Line::width).max().unwrap_or(0);
                 let bubble_w = inner + 2;
                 let pad = if who == Who::You { width.saturating_sub(bubble_w) } else { 0 };
@@ -452,8 +667,10 @@ pub(super) fn layout_entries(app: &App, entries: &[Entry], width: usize, view: &
 
     if view.typing {
         out.push(Chunk::Lines(vec![Line::default()]));
+        // Dots that fill in and start over, so it reads as live.
+        let dots = format!("{:<3}", ".".repeat(view.dots.clamp(1, 3)));
         out.push(Chunk::Lines(vec![Line::from(Span::styled(
-            format!("{} is typing…", view.partner),
+            format!("{} is typing{dots}", view.partner),
             t.muted().add_modifier(Modifier::ITALIC),
         ))]));
     }
@@ -606,6 +823,14 @@ fn draw_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
         search: search.as_deref(),
         unsure: &app.chat.unsure,
         new_from: app.chat.new_from,
+        labels: match &app.chat.mode {
+            ChatMode::Hints(hints) => hints.iter().map(|h| (h.entry, h.start, h.label)).collect(),
+            _ => Vec::new(),
+        },
+        dots: app
+            .clock
+            .typing_since
+            .map_or(3, |since| (app.now.saturating_duration_since(since).as_millis() / 400 % 3) as usize + 1),
     };
     let laid = layout_entries(app, &app.chat.entries, content.width as usize, &view);
     let fill = view.focus.and_then(|e| laid.lines_of(e));
@@ -625,6 +850,7 @@ fn draw_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
     let top = app.chat.top_line(total, height);
     app.chat.last_total = total;
     app.chat.last_height = height;
+    app.chat.visible = laid.visible_entries(top, height);
     render_chunks(frame, app, content, &laid.chunks, top, fill);
 
     if !app.chat.is_following() {
@@ -635,7 +861,7 @@ fn draw_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
         let w = (width(&label) as u16).min(area.width);
         let rect = Rect::new(area.right() - w, area.bottom() - 1, w, 1);
         frame.render_widget(Clear, rect);
-        frame.render_widget(Paragraph::new(label).style(Style::new().fg(t.accent).bg(t.surface)), rect);
+        frame.render_widget(Paragraph::new(label).style(super::float_style(app).fg(t.accent)), rect);
     }
 }
 
@@ -647,36 +873,65 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
     let row = |label: &str, value: String| {
         Line::from(vec![Span::styled(format!("{label:<9}"), t.muted()), Span::styled(value, Style::new().fg(t.fg))])
     };
-    let [you, partner] = Layout::vertical([Constraint::Length(12), Constraint::Min(0)]).areas(area);
+    // The partner matters most, so when space is short "you" shrinks to one line and
+    // the timers share a line.
+    let width = area.width as usize;
+    let full = partner_lines(app, width, false);
+    let (you_rows, (lines, kinks)) = if area.height as usize >= 12 + 1 + full.0.len() {
+        (12, full)
+    } else if area.height as usize >= 3 + 1 + full.0.len() {
+        (3, full)
+    } else {
+        (3, partner_lines(app, width, true))
+    };
+    let [you, partner] = Layout::vertical([Constraint::Length(you_rows), Constraint::Min(0)]).areas(area);
 
     let title = Line::from(vec![
         Span::raw("you "),
         Span::styled(format!("· {}", truncate(&app.config.active_profile, 16)), t.muted()),
     ]);
     let inner = section(frame, app, you, title, false);
-    let lines = vec![
-        row("gender", prefs.summary(Field::Gender)),
-        row("species", prefs.summary(Field::Species)),
-        row("role", prefs.summary(Field::Role)),
-        row("language", prefs.summary(Field::Language)),
-        Line::default(),
-        Line::from(Span::styled("seeking", t.muted().add_modifier(Modifier::BOLD))),
-        row("gender", prefs.summary(Field::PartnerGender)),
-        row("species", prefs.summary(Field::PartnerSpecies)),
-        row("role", prefs.summary(Field::PartnerRole)),
-        row("kinks", prefs.summary(Field::Kinks)),
-    ];
-    frame.render_widget(Paragraph::new(lines), inner);
+    let you_lines = if you_rows == 12 {
+        vec![
+            row("gender", prefs.summary(Field::Gender)),
+            row("species", prefs.summary(Field::Species)),
+            row("role", prefs.summary(Field::Role)),
+            row("language", prefs.summary(Field::Language)),
+            Line::default(),
+            Line::from(Span::styled("seeking", t.muted().add_modifier(Modifier::BOLD))),
+            row("gender", prefs.summary(Field::PartnerGender)),
+            row("species", prefs.summary(Field::PartnerSpecies)),
+            row("role", prefs.summary(Field::PartnerRole)),
+            row("kinks", prefs.summary(Field::Kinks)),
+        ]
+    } else {
+        let me = [Field::Gender, Field::Species, Field::Role].map(|f| prefs.summary(f)).join(" ");
+        vec![Line::from(Span::styled(truncate(&me, width), Style::new().fg(t.fg)))]
+    };
+    frame.render_widget(Paragraph::new(you_lines), inner);
 
     let inner = section(frame, app, partner, "partner", false);
-    let lines = match &app.partner {
-        PartnerState::None => vec![Line::from(Span::styled("not connected", t.muted()))],
+    if let Some((top, rows)) = kinks {
+        let height = rows.min(inner.height.saturating_sub(top));
+        app.hit(Rect::new(inner.x, inner.y + top, inner.width, height), Hit::Kinks);
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The sidebar's partner section, and where the (clickable) kinks sit in it.
+fn partner_lines(app: &App, width: usize, compact: bool) -> (Vec<Line<'static>>, Option<(u16, u16)>) {
+    let t = &app.theme;
+    let row = |label: &str, value: String| {
+        Line::from(vec![Span::styled(format!("{label:<9}"), t.muted()), Span::styled(value, Style::new().fg(t.fg))])
+    };
+    match &app.partner {
+        PartnerState::None => (vec![Line::from(Span::styled("not connected", t.muted()))], None),
         PartnerState::Searching => {
             let mut lines = vec![Line::from(Span::styled("looking for a match…", Style::new().fg(t.warning)))];
             if let Some(since) = app.clock.searching_since {
                 lines.push(row("for", human_duration(app.now.saturating_duration_since(since).as_secs())));
             }
-            lines
+            (lines, None)
         }
         PartnerState::Connected(info) => {
             let mut lines = vec![
@@ -696,18 +951,35 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
             // Shared kinks first, so the overlap is visible at a glance.
             let ordered: Vec<&str> = groups.shared.iter().chain(&groups.theirs).map(String::as_str).collect();
             let spans = kink_spans(&ordered, &groups.shared, t, Style::new().fg(t.fg));
-            lines.extend(wrap(&spans, inner.width as usize, 0));
+            lines.extend(wrap(&spans, width, 0));
             if let Some(key) = app.keymap.hint(Action::Kinks) {
                 lines.push(Line::from(Span::styled(format!("{key} explains"), t.muted().add_modifier(Modifier::DIM))));
             }
-            let height = (lines.len() as u16 - kinks_top).min(inner.height.saturating_sub(kinks_top));
-            app.hit(Rect::new(inner.x, inner.y + kinks_top, inner.width, height), Hit::Kinks);
+            let kinks = (kinks_top, lines.len() as u16 - kinks_top);
             lines.push(Line::default());
-            lines.extend(clock_rows(app));
-            lines
+            if compact {
+                lines.push(compact_clock(app));
+            } else {
+                lines.extend(clock_rows(app));
+            }
+            (lines, Some(kinks))
         }
-    };
-    frame.render_widget(Paragraph::new(lines), inner);
+    }
+}
+
+/// The timers on one line, for short terminals.
+fn compact_clock(app: &App) -> Line<'static> {
+    let t = &app.theme;
+    let ago = |at: std::time::Instant| human_duration(app.now.saturating_duration_since(at).as_secs());
+    let mut parts = Vec::new();
+    if let Some(since) = app.clock.partner_since {
+        parts.push(ago(since));
+    }
+    parts.push(match app.clock.last_heard {
+        Some(at) => format!("heard {} ago", ago(at)),
+        None => "not heard yet".into(),
+    });
+    Line::from(Span::styled(parts.join(" · "), t.muted()))
 }
 
 /// How long you've been together, when they last said something, and how long
@@ -883,6 +1155,7 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     let first = (crow + 1).saturating_sub(visible);
     if !app.input.is_empty() {
         let bad = app.misspelled();
+        let text_all = app.input.text();
         let wrong = Style::new().fg(t.error).add_modifier(Modifier::UNDERLINED);
         // Rows are consecutive slices of the text, so their byte offsets add up.
         let mut offset = 0;
@@ -890,6 +1163,10 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         for (i, row) in rows.iter().enumerate() {
             let start = offset;
             offset += row.len();
+            // A paragraph break ends the row but isn't part of it.
+            if text_all[offset..].starts_with('\n') {
+                offset += 1;
+            }
             if i < first || i >= first + visible {
                 continue;
             }
@@ -984,7 +1261,7 @@ fn draw_snippet_hints(frame: &mut Frame, app: &App, transcript: Rect) {
         })
         .collect();
     frame.render_widget(Clear, rect);
-    frame.render_widget(Paragraph::new(lines).style(Style::new().bg(t.surface)), rect);
+    frame.render_widget(Paragraph::new(lines).style(super::float_style(app)), rect);
 }
 
 /// While typing `:smi…`, offer matching emoji just above the input.
@@ -1007,7 +1284,34 @@ fn draw_emoji_hints(frame: &mut Frame, app: &App, transcript: Rect) {
     let w = spans.iter().map(Span::width).sum::<usize>() as u16;
     let rect = Rect::new(transcript.x + 2, transcript.bottom() - 1, w, 1);
     frame.render_widget(Clear, rect);
-    frame.render_widget(Paragraph::new(Line::from(spans)).style(Style::new().bg(t.surface)), rect);
+    frame.render_widget(Paragraph::new(Line::from(spans)).style(super::float_style(app)), rect);
+}
+
+/// While typing a command's argument (`/theme n…`), list what it could be.
+fn draw_arg_hints(frame: &mut Frame, app: &App, transcript: Rect) {
+    let Some((_, found)) = app.arg_suggestions() else { return };
+    if app.modal.is_some() || transcript.height < found.len() as u16 + 2 {
+        return;
+    }
+    let t = &app.theme;
+    let w =
+        (found.iter().map(|f| width(f)).max().unwrap_or(0) + 8).min(transcript.width.saturating_sub(4) as usize) as u16;
+    let h = found.len() as u16;
+    let rect = Rect::new(transcript.x + 2, transcript.bottom() - h, w, h);
+    let lines: Vec<Line> = found
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let (key, style) = if i == 0 {
+                ("tab ", Style::new().fg(t.accent).add_modifier(Modifier::BOLD))
+            } else {
+                ("    ", Style::new().fg(t.fg))
+            };
+            Line::from(vec![Span::styled(format!(" {key}"), style), Span::styled(truncate(f, w as usize - 6), style)])
+        })
+        .collect();
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(lines).style(super::float_style(app)), rect);
 }
 
 /// While typing `/co…`, list matching commands just above the input.
@@ -1044,5 +1348,5 @@ fn draw_command_hints(frame: &mut Frame, app: &App, transcript: Rect) {
         })
         .collect();
     frame.render_widget(Clear, rect);
-    frame.render_widget(Paragraph::new(lines).style(Style::new().bg(t.surface)), rect);
+    frame.render_widget(Paragraph::new(lines).style(super::float_style(app)), rect);
 }

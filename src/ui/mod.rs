@@ -13,12 +13,13 @@ mod settings;
 mod traffic;
 
 use crate::app::{App, ConnStatus, Hit, Level, ListId, PartnerState, Tab};
+use crate::config::PopupStyle;
 use crate::keymap::Action;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     app.clear_hits();
@@ -102,6 +103,7 @@ fn header(frame: &mut Frame, app: &App, area: Rect) {
         )),
     };
     let profile = Span::styled(format!(" · {}", app.config.active_profile), t.muted());
+    let ai = app.ai_active().then(|| Span::styled(" · ai", Style::new().fg(t.accent)));
     // Most to least detailed; the first that fits wins.
     let status_line = |detail: usize| {
         let mut spans = vec![Span::raw("  "), dot.clone(), Span::styled(format!(" {status}"), t.muted())];
@@ -113,6 +115,7 @@ fn header(frame: &mut Frame, app: &App, area: Rect) {
         }
         if detail >= 1 {
             spans.push(profile.clone());
+            spans.extend(ai.clone());
         }
         spans.push(Span::raw(" "));
         Line::from(spans)
@@ -169,6 +172,9 @@ pub fn hint_pairs(app: &App) -> Vec<(String, &'static str)> {
             ("n", "save as snippet"),
             ("esc", "done"),
         ]),
+        Tab::Chat if matches!(app.chat.mode, crate::app::chat::ChatMode::Hints(_)) => {
+            fixed(&[("letter", "open"), ("shift+letter", "copy"), ("esc", "cancel")])
+        }
         Tab::Chat if matches!(app.chat.mode, crate::app::chat::ChatMode::Search(_)) => {
             fixed(&[("type", "search"), ("enter", "done typing"), ("n/N", "older/newer"), ("esc", "close")])
         }
@@ -260,10 +266,18 @@ pub fn hint_pairs(app: &App) -> Vec<(String, &'static str)> {
 fn hints(frame: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
     let mut spans = vec![Span::raw("  ")];
+    let mut x = area.x + 2;
     for (i, (key, action)) in hint_pairs(app).into_iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled(" · ", t.muted().add_modifier(Modifier::DIM)));
+            x += 3;
         }
+        // Each hint is clickable and does what its key does.
+        let w = (crate::text::width(&key) + 1 + crate::text::width(action)) as u16;
+        if x + w <= area.right() {
+            app.hit(Rect::new(x, area.y, w, 1), Hit::HintKey(key.clone()));
+        }
+        x += w;
         spans.push(Span::styled(key, Style::new().fg(t.fg)));
         spans.push(Span::styled(format!(" {action}"), t.muted()));
     }
@@ -281,7 +295,11 @@ fn toasts(frame: &mut Frame, app: &App, area: Rect) {
             Level::Warning => t.warning,
             Level::Error => t.error,
         };
-        let lines = crate::text::wrap(&[Span::raw(toast.text.clone())], width.saturating_sub(5) as usize, 0);
+        let mut text = vec![Span::raw(toast.text.clone())];
+        if toast.level == Level::Error {
+            text.push(Span::styled("  esc", t.muted()));
+        }
+        let lines = crate::text::wrap(&text, width.saturating_sub(5) as usize, 0);
         let h = lines.len() as u16;
         if y < area.y + h + 4 {
             break;
@@ -299,7 +317,8 @@ fn toasts(frame: &mut Frame, app: &App, area: Rect) {
             })
             .collect();
         frame.render_widget(Clear, rect);
-        frame.render_widget(Paragraph::new(body).style(Style::new().fg(t.fg).bg(t.surface)), rect);
+        frame.render_widget(Paragraph::new(body).style(float_style(app).fg(t.fg)), rect);
+        app.hit(rect, Hit::Toasts);
         y -= 1;
     }
 }
@@ -315,6 +334,46 @@ pub fn thousands(n: u64) -> String {
         out.push(c);
     }
     out
+}
+
+/// Get `rect` ready for a floating box: clear what's under it and fill the inside of
+/// its border with `fill`. The fill stops inside the border, because a border line runs
+/// through the middle of its cells and colour on them would poke out past the line.
+pub fn popup_fill(frame: &mut Frame, app: &App, rect: Rect, fill: Color) {
+    // The border cells take the page background (see-through when that's transparent).
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Block::new().style(Style::new().bg(app.theme.bg)), rect);
+    if app.config.settings.popup_style != PopupStyle::Clear {
+        let inside = rect.inner(ratatui::layout::Margin::new(1, 1));
+        frame.render_widget(Block::new().style(Style::new().bg(fill)), inside);
+    }
+}
+
+/// The border for a floating box filled with `fill` (see [`popup_fill`]): a line in
+/// `line`, or for the solid style, half blocks that finish the fill with crisp edges.
+pub fn popup_block<'a>(app: &App, fill: Color, line: Style) -> Block<'a> {
+    match app.config.settings.popup_style {
+        PopupStyle::Solid => {
+            Block::bordered().border_type(BorderType::QuadrantInside).border_style(Style::new().fg(fill))
+        }
+        _ => Block::bordered().border_type(BorderType::Rounded).border_style(line),
+    }
+}
+
+/// A title for a floating box. On a solid card it sits on a small tab of the fill colour.
+pub fn popup_title(app: &App, fill: Color, spans: Vec<Span<'static>>) -> Line<'static> {
+    if app.config.settings.popup_style != PopupStyle::Solid {
+        return Line::from(spans);
+    }
+    Line::from(spans.into_iter().map(|s| s.patch_style(Style::new().bg(fill))).collect::<Vec<_>>())
+}
+
+/// Background for floating boxes without a border (toasts, suggestion lists).
+pub fn float_style(app: &App) -> Style {
+    match app.config.settings.popup_style {
+        PopupStyle::Clear => Style::new(),
+        _ => Style::new().bg(app.theme.surface),
+    }
 }
 
 /// A rectangle of at most `w`×`h` centred in `area`.

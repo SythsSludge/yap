@@ -154,3 +154,70 @@ fn history_records_how_each_partner_went() {
     h.server(ServerMessage::PartnerLeft);
     assert!(h.history.records.is_empty());
 }
+
+#[test]
+fn activity_records_searches_and_online_counts() {
+    let mut h = harness().online().with_prefs();
+    assert_eq!(h.activity.online.iter().map(|b| b[0]).sum::<u64>(), 1, "the count from connecting");
+    h.ctrl('f');
+    h.now += Duration::from_secs(40);
+    let h = h.partnered();
+    let searches: Vec<[u64; 2]> = h.activity.searches.iter().copied().filter(|b| b[0] > 0).collect();
+    assert_eq!(searches, [[1, 40]]);
+    let mut h = h;
+    h.flush();
+    assert!(h.paths.activity_file.exists());
+}
+
+#[test]
+fn buddy_reacts_and_can_be_changed() {
+    use crate::buddy::Mood;
+    let mut h = harness().online().with_prefs();
+    assert_eq!(h.buddy().unwrap().name, "fox");
+    assert_eq!(h.buddy_mood(), Mood::Idle);
+    h.ctrl('f');
+    assert_eq!(h.buddy_mood(), Mood::Searching);
+    let mut h = h.partnered();
+    assert_eq!(h.buddy_mood(), Mood::Excited, "a match");
+    assert!(h.buddy_speech().is_some());
+    h.now += Duration::from_secs(10);
+    assert_eq!(h.buddy_mood(), Mood::Idle, "reactions wear off");
+    assert_eq!(h.buddy_speech(), None);
+
+    h.config.active_mut().character = "Ember".into();
+    h.server(ServerMessage::ReceiveMessage("hey Ember!".into()));
+    assert_eq!(h.buddy_mood(), Mood::Surprised, "your name came up");
+    h.now += Duration::from_secs(10);
+    h.server(ServerMessage::ReceiveMessage("love that <3".into()));
+    assert_eq!(h.buddy_mood(), Mood::Love);
+    h.now += Duration::from_secs(10);
+    h.server(ServerMessage::PartnerTyping(true));
+    h.now += Duration::from_secs(10);
+    assert_eq!(h.buddy_mood(), Mood::Curious, "still typing");
+    h.server(ServerMessage::PartnerLeft);
+    assert_eq!(h.buddy_mood(), Mood::Sad);
+
+    // Background chats don't move it.
+    h.now += Duration::from_secs(20);
+    h.tab = Tab::Drawer;
+    h.server(ServerMessage::ReceiveMessage("psst".into()));
+    assert_eq!(h.buddy_mood(), Mood::Idle);
+
+    h.run_command(Command::Buddy(Some("cat".into())));
+    assert_eq!(h.buddy().unwrap().name, "cat");
+    h.run_command(Command::Buddy(Some("off".into())));
+    assert!(h.buddy().is_none());
+    assert!(h.buddy_frame().is_empty());
+}
+
+#[test]
+fn custom_buddies_load_from_the_config_folder() {
+    let mut h = harness();
+    let dir = h.paths.config_file.parent().unwrap().join("buddies");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("bun.toml"), "extends = \"cat\"\n[moods]\nidle = ['''\n (\\_/)\n ( •.•)''']\n").unwrap();
+    assert!(h.load_buddies().is_empty());
+    h.run_command(Command::Buddy(Some("bun".into())));
+    h.now += Duration::from_secs(10);
+    assert_eq!(h.buddy_frame(), [" (\\_/)", " ( •.•)"]);
+}

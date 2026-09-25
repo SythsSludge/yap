@@ -15,6 +15,20 @@ impl App {
         }
     }
 
+    /// First start: say hello and offer to set up a profile.
+    pub fn welcome(&mut self) {
+        self.modal = Some(Modal::Welcome);
+    }
+
+    /// From the welcome: straight to the first preference that still needs choosing.
+    pub(super) fn start_setup(&mut self) {
+        self.tab = Tab::Preferences;
+        self.prefs_ui.pane = PrefsPane::Fields;
+        if let Err(invalid) = self.config.active().preferences.validate() {
+            self.prefs_ui.field = Field::ALL.iter().position(|f| *f == invalid.field()).unwrap_or(0);
+        }
+    }
+
     pub fn open_profile_picker(&mut self) {
         let selected = self.config.profiles.iter().position(|p| p.name == self.config.active_profile).unwrap_or(0);
         self.modal = Some(Modal::Profiles { selected });

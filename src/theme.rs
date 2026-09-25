@@ -318,6 +318,37 @@ pub fn parse_theme(src: &str, fallback_name: &str, known: &[Theme]) -> Result<Th
     Ok(theme)
 }
 
+/// WCAG contrast ratio between two colours, when both are exact RGB.
+pub fn contrast(a: Color, b: Color) -> Option<f64> {
+    let luminance = |c: Color| {
+        let Color::Rgb(r, g, b) = c else { return None };
+        let lin = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        Some(0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b))
+    };
+    let (la, lb) = (luminance(a)?, luminance(b)?);
+    let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+    Some((hi + 0.05) / (lo + 0.05))
+}
+
+/// Text that would be hard to read in a theme. Colours given as names or `default`
+/// depend on the terminal, so only exact RGB pairs are checked.
+pub fn contrast_warnings(theme: &Theme) -> Vec<String> {
+    let mut out = Vec::new();
+    for (what, fg, bg, min) in [
+        ("text", theme.fg, theme.bg, 3.0),
+        ("secondary text", theme.muted, theme.bg, 2.0),
+        ("popup text", theme.fg, theme.surface, 3.0),
+    ] {
+        if let Some(ratio) = contrast(fg, bg).filter(|r| *r < min) {
+            out.push(format!("{what} is hard to read on its background ({ratio:.1}:1, aim for {min}:1 or more)"));
+        }
+    }
+    out
+}
+
 /// Built-ins plus every `*.toml` in `dir`, sorted by file name so `extends` can refer
 /// to earlier files. A user theme with a built-in's name replaces it. Returns the themes
 /// and any per-file errors.
@@ -338,10 +369,13 @@ pub fn load_all(dir: Option<&Path>) -> (Vec<Theme>, Vec<String>) {
         let parsed =
             std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|src| parse_theme(&src, &stem, &themes));
         match parsed {
-            Ok(theme) => match themes.iter_mut().find(|t| t.name == theme.name) {
-                Some(existing) => *existing = theme,
-                None => themes.push(theme),
-            },
+            Ok(theme) => {
+                errors.extend(contrast_warnings(&theme).into_iter().map(|w| format!("{}: {w}", path.display())));
+                match themes.iter_mut().find(|t| t.name == theme.name) {
+                    Some(existing) => *existing = theme,
+                    None => themes.push(theme),
+                }
+            }
             Err(e) => errors.push(format!("{}: {e}", path.display())),
         }
     }
@@ -351,6 +385,17 @@ pub fn load_all(dir: Option<&Path>) -> (Vec<Theme>, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn low_contrast_themes_are_flagged() {
+        assert!((contrast(Color::Rgb(0, 0, 0), Color::Rgb(255, 255, 255)).unwrap() - 21.0).abs() < 0.01);
+        assert_eq!(contrast(Color::Red, Color::Rgb(0, 0, 0)), None);
+        for t in builtins() {
+            assert!(contrast_warnings(&t).is_empty(), "built-in {} fails its own check", t.name);
+        }
+        let murky = parse_theme("[colors]\nfg = \"#333333\"\nbg = \"#222222\"\n", "murky", &builtins()).unwrap();
+        assert!(contrast_warnings(&murky)[0].starts_with("text is hard to read"));
+    }
 
     #[test]
     fn parses_colour_formats() {

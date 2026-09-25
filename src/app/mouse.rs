@@ -62,6 +62,14 @@ pub enum Hit {
     Shelf(Shelf),
     /// The partner's kinks in the sidebar.
     Kinks,
+    /// The other chat of a split view.
+    Pane(u64),
+    /// The toasts: a click dismisses them.
+    Toasts,
+    /// A key hint in the footer, by the key it shows.
+    HintKey(String),
+    /// The buddy: a click pets it.
+    Buddy,
 }
 
 impl App {
@@ -90,16 +98,28 @@ impl App {
         self.click(hit, double);
     }
 
+    /// A click on a footer hint does what the key would: `^F` runs Find, `e/E` presses `e`.
+    fn press_hint(&mut self, key: &str) {
+        if let Some(&action) = crate::keymap::Action::ALL.iter().find(|a| self.keymap.hint(**a).as_deref() == Some(key))
+        {
+            return self.run_action(action);
+        }
+        let first = key.split(['/', ' ']).next().unwrap_or_default();
+        if let Ok(chord) = crate::keymap::Chord::parse(first) {
+            self.on_key(KeyEvent::new(chord.code, chord.mods));
+        }
+    }
+
     fn enter(&mut self) {
         self.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     }
 
     fn click(&mut self, hit: Hit, double: bool) {
         // With a popup open, only its own list and the viewer's buttons respond.
-        if self.viewer.is_some() && !matches!(hit, Hit::Viewer(_)) {
+        if self.viewer.is_some() && !matches!(hit, Hit::Viewer(_) | Hit::HintKey(_)) {
             return;
         }
-        if self.modal.is_some() && !matches!(hit, Hit::Row { list: ListId::Modal, .. }) {
+        if self.modal.is_some() && !matches!(hit, Hit::Row { list: ListId::Modal, .. } | Hit::HintKey(_)) {
             return;
         }
         match hit {
@@ -124,6 +144,10 @@ impl App {
             }
             Hit::Shelf(shelf) => self.drawer_ui.shelf = shelf,
             Hit::Kinks => self.open_kinks(),
+            Hit::Pane(id) => self.switch_session(id),
+            Hit::Toasts => self.toasts.clear(),
+            Hit::Buddy => self.buddy_event(crate::buddy::Event::Petted),
+            Hit::HintKey(key) => self.press_hint(&key),
             Hit::Viewer(button) => self.viewer_button(button),
             Hit::Row { list, index } => self.click_row(list, index, double),
         }

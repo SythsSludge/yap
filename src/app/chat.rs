@@ -93,7 +93,22 @@ pub enum ChatMode {
     /// A message is selected (entry index) for quoting, copying or saving.
     Select(usize),
     Search(Search),
+    /// Letters on the links in view; typing one opens that link.
+    Hints(Vec<LinkHint>),
 }
+
+/// A link labelled for keyboard opening.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkHint {
+    pub entry: usize,
+    /// Byte offset of the link in the message.
+    pub start: usize,
+    pub url: String,
+    pub label: char,
+}
+
+/// Hint letters, easiest to reach first.
+pub const HINT_LETTERS: &str = "asdfghjklqwertyuiopzxcvbnm";
 
 #[derive(Debug, Default)]
 pub struct Chat {
@@ -110,6 +125,8 @@ pub struct Chat {
     /// Your messages (entry indices) sent so close to the partner leaving that they
     /// may never have arrived.
     pub unsure: Vec<usize>,
+    /// The first and last entries on screen at the last render.
+    pub visible: Option<(usize, usize)>,
     /// Where the messages you haven't seen start, for the "new" divider.
     pub new_from: Option<usize>,
     /// The divider has been on screen, so the next unseen message moves it.
@@ -168,7 +185,7 @@ impl Chat {
     /// The entry the view should keep on screen, if any.
     pub fn focus_entry(&self) -> Option<usize> {
         match &self.mode {
-            ChatMode::Normal => None,
+            ChatMode::Normal | ChatMode::Hints(_) => None,
             ChatMode::Select(i) => Some(*i),
             ChatMode::Search(s) => s.current_entry(),
         }

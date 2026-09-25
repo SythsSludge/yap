@@ -191,3 +191,52 @@ fn spelling_fixes_and_learns_words() {
     h.type_str("wrnog ");
     assert!(h.misspelled().is_empty());
 }
+
+#[test]
+fn paragraphs_and_undo_in_the_message_box() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.type_str("first bit");
+    alt_key(&mut h, KeyCode::Enter);
+    h.type_str("second bit");
+    assert_eq!(h.input.text(), "first bit\nsecond bit");
+    h.ctrl('u');
+    assert_eq!(h.input.text(), "");
+    h.ctrl('z');
+    assert_eq!(h.input.text(), "first bit\nsecond bit");
+    h.take_effects();
+    h.press(KeyCode::Enter);
+    assert!(h.sent().contains(&ClientMessage::SendMessage("first bit / second bit".into())));
+}
+
+#[test]
+fn emoji_picker_searches_and_inserts() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.type_str("hi ");
+    alt(&mut h, 'e');
+    h.type_str("wave");
+    let Some(Modal::Emoji { selected, .. }) = &h.modal else { panic!("{:?}", h.modal) };
+    assert_eq!(*selected, 0);
+    h.press(KeyCode::Enter);
+    assert_eq!(h.input.text(), "hi 👋");
+    assert!(h.modal.is_none());
+
+    h.run_command(Command::Emoji);
+    h.press(KeyCode::Down);
+    let Some(Modal::Emoji { selected, .. }) = &h.modal else { panic!() };
+    assert_eq!(*selected, crate::emoji::PICKER_COLUMNS);
+}
+
+#[test]
+fn dict_command_downloads_and_switches() {
+    let mut h = harness();
+    h.run_command(Command::Dict(Some("get en-GB".into())));
+    assert_eq!(h.take_effects(), vec![Effect::FetchDictionary("en-GB".into())]);
+    h.on_dictionary("en-GB".into(), Ok("MIT AND BSD".into()));
+    assert_eq!(h.config.settings.spell_language, "en-GB");
+    assert!(h.speller.is_some());
+    assert!(h.last_toast().unwrap().starts_with("Installed en-GB"));
+    h.on_dictionary("xx".into(), Err("there's no `xx` dictionary to download".into()));
+    assert!(h.last_toast().unwrap().contains("Couldn't get the xx dictionary"));
+    h.run_command(Command::Dict(None));
+    assert!(h.last_toast().unwrap().starts_with("Spellcheck:"));
+}

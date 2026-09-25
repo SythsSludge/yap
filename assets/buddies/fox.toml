@@ -1,0 +1,89 @@
+# A buddy is up to 3 lines tall and 12 columns wide. Each mood is a list of frames
+# that play in a loop; a mood you leave out falls back to `idle`.
+name = "fox"
+color = "#ff9e64"
+speed = 700            # milliseconds per frame
+
+[moods]
+idle = [
+  ''' /\   /\
+( o . o )
+ \  w  / ''',
+  ''' /\   /\
+( o . o )
+ \  w  / ''',
+  ''' /\   /\
+( o . o )
+ \  w  / ''',
+  ''' /\   /\
+( - . - )
+ \  w  / ''',
+]
+happy = [
+  ''' /\   /\
+( ^ . ^ )
+ \  w  / ''',
+]
+excited = [
+  ''' /\   /\
+( O . O )
+ \  o  / ''',
+  '''\/\   /\/
+( * . * )
+ \  o  / ''',
+]
+love = [
+  ''' /\   /\
+( ♥ . ♥ )
+ \  w  / ''',
+  ''' /\ ♥ /\
+( ♥ . ♥ )
+ \  w  / ''',
+]
+sad = [
+  ''' /\   /\
+( ; . ; )
+ \  ~  / ''',
+]
+surprised = [
+  ''' |\   /|
+( O . O )
+ \  o  / ''',
+]
+sleepy = [
+  ''' /\   /\ z
+( - . - )
+ \  w  / ''',
+  ''' /\   /\ Z
+( - . - )
+ \  w  / ''',
+]
+curious = [
+  ''' /\   /\
+( o . O )
+ \  w  / ''',
+  ''' /\   /\
+( O . o )
+ \  w  / ''',
+]
+searching = [
+  ''' /\   /\
+(o  .  o )
+ \  w  / ''',
+  ''' /\   /\
+( o  .  o)
+ \  w  / ''',
+]
+proud = [
+  ''' /\   /\
+( ^ . ~ )
+ \  v  / ''',
+]
+dizzy = [
+  ''' /\   /\
+( @ . @ )
+ \  ~  / ''',
+  ''' /\   /\
+( @ . @ )
+ \ ~   / ''',
+]

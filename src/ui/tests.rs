@@ -6,6 +6,7 @@ use crate::app::tests::{Harness, harness};
 use crate::net::{NetEvent, TrafficRecord};
 use crate::protocol::ServerMessage;
 use crate::traffic::{Direction, FrameKind};
+use chrono::Timelike;
 use chrono::{DateTime, Local};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -285,7 +286,7 @@ fn roleplay_formatting_and_names_render() {
     terminal.draw(|f| draw(f, &mut h.app)).unwrap();
     let screen = terminal.backend().to_string();
     assert!(screen.contains("Ember") && screen.contains("Rook"), "{screen}");
-    assert!(screen.contains("Rook is typing…"));
+    assert!(screen.contains("Rook is typing."));
     let buf = terminal.backend().buffer();
     let italic: String = buf
         .content()
@@ -449,4 +450,93 @@ fn viewer_centres_the_picture() {
     assert_eq!(painted.len(), 4, "a 40×20 px image is 4×1 cells at 10×20 px per cell");
     let (x, y) = painted[0];
     assert!((41..=45).contains(&x) && (9..=12).contains(&y), "centred, not in the corner: {painted:?}");
+}
+
+#[test]
+fn link_hint_letters_sit_before_links() {
+    let mut h = chatting();
+    render(&mut h, 110, 30);
+    h.start_link_hints();
+    let screen = render(&mut h, 110, 30);
+    assert!(screen.contains(" a https://e621.net/posts/123"), "{screen}");
+}
+
+#[test]
+fn split_view() {
+    let mut h = chatting();
+    h.toasts.clear();
+    h.new_session();
+    h.toasts.clear();
+    h.toggle_split();
+    h.toasts.clear();
+    insta::assert_snapshot!(render(&mut h, 120, 20));
+}
+
+#[test]
+fn stats_show_when_to_look() {
+    let mut h = app();
+    for hour in [20, 21, 22] {
+        for _ in 0..3 {
+            h.activity.searched(chrono::Local::now().with_hour(hour).unwrap(), 30);
+        }
+    }
+    h.activity.online(chrono::Local::now(), 120);
+    h.run_command(crate::commands::Command::Stats);
+    let screen = render(&mut h, 90, 26);
+    assert!(screen.contains("online, by hour"), "{screen}");
+    assert!(screen.contains("quickest matches"), "{screen}");
+    assert!(screen.contains("20:00 (30s)"), "{screen}");
+}
+
+#[test]
+fn long_pauses_and_new_days_get_a_line() {
+    let mut h = chatting();
+    let now = chrono::Local::now();
+    let n = h.chat.entries.len();
+    for (i, e) in h.chat.entries.iter_mut().enumerate() {
+        e.at = now - chrono::TimeDelta::minutes(30 * (n - i) as i64);
+    }
+    h.chat.entries[0].at = now - chrono::TimeDelta::days(1) - chrono::TimeDelta::hours(1);
+    let screen = render(&mut h, 110, 40);
+    assert!(screen.contains(" Today "), "{screen}");
+    let time = h.chat.entries[n - 1].at.format("%H:%M").to_string();
+    assert!(screen.contains(&format!(" {time} ")), "{screen}");
+}
+
+#[test]
+fn popups_fill_only_inside_their_border() {
+    use crate::config::PopupStyle;
+    use ratatui::style::Color;
+    let confirm = |h: &mut Harness| {
+        h.modal = Some(Modal::Confirm { text: "Sure?".into(), action: Confirm::Block });
+        let surface = h.theme.surface;
+        let backend = render_backend(h, 80, 20);
+        let buf = backend.buffer().clone();
+        // The popup's top-left corner: the first cell drawn with a box/block glyph.
+        let (x, y) = (0..20)
+            .flat_map(|y| (0..80).map(move |x| (x, y)))
+            .find(|&(x, y)| matches!(buf[(x, y)].symbol(), "╭" | "▗"))
+            .expect("a popup corner");
+        (buf[(x, y)].clone(), buf[(x + 1, y + 1)].clone(), surface)
+    };
+    let mut h = app();
+    let (corner, inside, surface) = confirm(&mut h);
+    assert_eq!(corner.symbol(), "╭");
+    assert_ne!(corner.bg, surface, "no fill on the border, so nothing pokes out past the line");
+    assert_eq!(corner.bg, h.theme.bg, "it blends with the page instead");
+    assert_eq!(inside.bg, surface);
+
+    h.config.settings.popup_style = PopupStyle::Solid;
+    let (corner, inside, surface) = confirm(&mut h);
+    assert_eq!((corner.symbol(), corner.fg), ("▗", surface), "half blocks finish the card's edge");
+    assert_eq!(inside.bg, surface);
+
+    h.config.settings.popup_style = PopupStyle::Clear;
+    let (_, inside, surface) = confirm(&mut h);
+    assert_ne!(inside.bg, surface);
+    assert_eq!(inside.bg, h.theme.bg, "see-through to the page");
+    h.config.settings.transparent_background = true;
+    h.refresh_theme();
+    let (corner, inside, _) = confirm(&mut h);
+    assert_eq!((corner.bg, inside.bg), (Color::Reset, Color::Reset), "and to the terminal when that's transparent");
 }

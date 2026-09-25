@@ -47,7 +47,7 @@ impl Session {
             partner: PartnerState::None,
             can_block_previous: false,
             chat: Chat::default(),
-            input: LineEditor::new(),
+            input: LineEditor::with_paragraphs(),
             typing_sent: false,
             last_edit: None,
             unseen: 0,
@@ -148,7 +148,7 @@ impl App {
     /// Whether the current session is on screen (as opposed to being handled in the
     /// background, or the user looking at another tab).
     pub fn chat_visible(&self) -> bool {
-        !self.background && self.tab == Tab::Chat
+        (!self.background && self.tab == Tab::Chat) || self.split_shows(self.session_id)
     }
 
     /// Route a network event to the session whose socket produced it.
@@ -160,7 +160,7 @@ impl App {
         self.others.len() + 1 + usize::from(self.displaced.is_some())
     }
 
-    fn all_ids(&self) -> Vec<u64> {
+    pub(super) fn all_ids(&self) -> Vec<u64> {
         let mut ids: Vec<u64> =
             self.others.iter().chain(&self.displaced).map(|s| s.id).chain([self.session_id]).collect();
         ids.sort_unstable();
@@ -209,6 +209,7 @@ impl App {
             return;
         }
         let Some(index) = self.others.iter().position(|s| s.id == id) else { return };
+        self.place_in_split(self.session_id, id);
         let mut target = self.others.remove(index);
         self.exchange(&mut target);
         self.others.push(target);
@@ -231,6 +232,7 @@ impl App {
     /// Open another chat with its own connection and switch to it.
     pub fn new_session(&mut self) {
         let mut fresh = Session::new(self.next_session, self.config.active_profile.clone());
+        self.place_in_split(self.session_id, fresh.id);
         self.next_session += 1;
         self.exchange(&mut fresh);
         self.others.push(fresh);
@@ -266,6 +268,7 @@ impl App {
         self.exchange(&mut next);
         drop(next);
         self.unseen = 0;
+        self.fix_split();
         self.toast(Level::Info, format!("Closed chat {number}."));
     }
 

@@ -77,3 +77,31 @@ fn tab_completes_slash_commands() {
     h.press(KeyCode::Tab);
     assert_eq!(h.chat_focus, ChatFocus::Drawer);
 }
+
+#[test]
+fn tab_completes_command_arguments() {
+    let mut h = harness().online().with_prefs();
+    h.type_str("/theme no");
+    h.press(KeyCode::Tab);
+    assert_eq!(h.input.text(), "/theme nord");
+    assert!(h.arg_suggestions().is_none(), "nothing left to complete");
+
+    h.input.clear();
+    h.config.create_profile("vixen", complete_prefs()).unwrap();
+    h.type_str("/profile v");
+    h.press(KeyCode::Tab);
+    assert_eq!(h.input.text(), "/profile vixen");
+
+    // Paths: folders get a slash so you can keep going.
+    let dir = h._dir.path().to_owned();
+    std::fs::create_dir(dir.join("exports")).unwrap();
+    std::fs::write(dir.join("chat-one.md"), "").unwrap();
+    h.input.clear();
+    h.type_str(&format!("/log {}/ex", dir.display()));
+    h.press(KeyCode::Tab);
+    assert_eq!(h.input.text(), format!("/log {}/exports/", dir.display()));
+    h.input.clear();
+    h.type_str(&format!("/log {}/ch", dir.display()));
+    h.press(KeyCode::Tab);
+    assert_eq!(h.input.text(), format!("/log {}/chat-one.md", dir.display()));
+}

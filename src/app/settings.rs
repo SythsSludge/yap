@@ -9,15 +9,19 @@ use crate::keymap::{Action, Keymap};
 pub enum Row {
     Theme,
     Transparent,
+    PopupStyle,
     ChatStyle,
     RpFormatting,
     Emoji,
     Spellcheck,
     Timestamps,
     Sidebar,
+    Buddy,
     SplitChats,
     SaveLogs,
     KeepHistory,
+    ReopenTabs,
+    AiAccess,
     ConfirmActions,
     AutoRequeue,
     RequeueDelay,
@@ -57,13 +61,13 @@ impl Row {
     pub fn section(self) -> &'static str {
         use Row::*;
         match self {
-            Theme | Transparent | ChatStyle | RpFormatting | Timestamps | Sidebar => "Appearance",
-            SplitChats | SaveLogs | KeepHistory | ConfirmActions | AutoRequeue | RequeueDelay | Editor
+            Theme | Transparent | PopupStyle | ChatStyle | RpFormatting | Timestamps | Sidebar | Buddy => "Appearance",
+            SplitChats | SaveLogs | KeepHistory | ReopenTabs | ConfirmActions | AutoRequeue | RequeueDelay | Editor
             | ParagraphBreak | Emoji | Spellcheck => "Chats",
             SkipEnabled | SkipMinShared | SkipLanguage | SkipMax => {
                 "Auto-skip (limits are set per profile in Preferences)"
             }
-            ServerUrl | AutoReconnect | SendLanguage => "Connection",
+            ServerUrl | AutoReconnect | SendLanguage | AiAccess => "Connection",
             Bell | TitleFlash | Desktop | NotifyMessages | Sound | SoundCommand | Keywords => {
                 "Notifications (while unfocused)"
             }
@@ -80,13 +84,16 @@ impl Row {
         match self {
             Theme => "Theme".into(),
             Transparent => "Transparent background".into(),
+            PopupStyle => "Popup style".into(),
             ChatStyle => "Chat layout".into(),
             RpFormatting => "Roleplay formatting".into(),
             Timestamps => "Timestamps".into(),
             Sidebar => "Partner sidebar".into(),
+            Buddy => "Buddy".into(),
             SplitChats => "Fresh chat view for each partner".into(),
             SaveLogs => "Save chat logs to disk".into(),
             KeepHistory => "Keep partner history".into(),
+            ReopenTabs => "Reopen chat tabs at startup".into(),
             ConfirmActions => "Confirm leave / block / re-roll".into(),
             AutoRequeue => "Search again when a partner leaves".into(),
             RequeueDelay => "Seconds before searching again".into(),
@@ -101,6 +108,7 @@ impl Row {
             ServerUrl => "Server".into(),
             AutoReconnect => "Reconnect automatically".into(),
             SendLanguage => "Send language preference".into(),
+            AiAccess => "AI tools (yap mcp)".into(),
             Bell => "Terminal bell".into(),
             TitleFlash => "Flash window title".into(),
             Desktop => "Desktop notification (OSC 99/777)".into(),
@@ -142,15 +150,19 @@ impl Row {
         match self {
             Theme => format!("‹ {} ›", s.theme),
             Transparent => flag(s.transparent_background),
+            PopupStyle => format!("‹ {} ›", s.popup_style.name()),
             ChatStyle => format!("‹ {} ›", s.chat_style.name()),
             RpFormatting => flag(s.rp_formatting),
             Emoji => flag(s.emoji_shortcodes),
             Spellcheck => format!("{} · {}", flag(s.spellcheck), s.spell_language),
             Timestamps => flag(s.timestamps),
             Sidebar => flag(s.show_sidebar),
+            Buddy => format!("‹ {} ›", if s.buddy.is_empty() { "off" } else { s.buddy.as_str() }),
             SplitChats => flag(s.split_chats),
             SaveLogs => flag(s.save_logs),
             KeepHistory => flag(s.keep_history),
+            ReopenTabs => flag(s.reopen_tabs),
+            AiAccess => format!("‹ {} ›", s.ai_access.name()),
             ConfirmActions => flag(s.confirm_actions),
             AutoRequeue => flag(s.auto_requeue),
             RequeueDelay => format!("‹ {} ›", s.requeue_delay_secs),
@@ -190,6 +202,9 @@ impl Row {
         use Row::*;
         match self {
             Transparent => "Leave the background unpainted so a transparent terminal shows through.",
+            PopupStyle => {
+                "outline: a border with the fill inside it · solid: a filled card, no line · clear: see-through."
+            }
             RpFormatting => {
                 "Show *actions* in italics and ((out of character)) asides dimmed. Messages are sent as typed."
             }
@@ -205,7 +220,14 @@ impl Row {
             Spellcheck => {
                 "Underline misspelled words as you type; alt+s offers fixes. Other languages: set spell_language in config.toml and install its hunspell dictionary."
             }
+            Buddy => {
+                "A little companion by the message box that reacts to your chats. Make your own in ~/.config/yap/buddies (see the README)."
+            }
             Emoji => "Type :smile: and it's sent as the emoji. While typing :smi… Tab completes the first suggestion.",
+            AiAccess => {
+                "Lets an AI app use yap through `yap mcp` (see the README). read: chats, logs, history. full: also drafts, finds, skips, profiles; it asks you before sending anything. What it reads goes to that AI's provider, partner messages included."
+            }
+            ReopenTabs => "Open the same chat tabs, each with its profile, next time. Partners start fresh.",
             KeepHistory => {
                 "Remember who you met and how each chat went (no messages) for /history. Stays on this machine."
             }
@@ -239,13 +261,16 @@ pub fn rows(s: &Settings) -> Vec<Row> {
     let mut rows = vec![
         Theme,
         Transparent,
+        PopupStyle,
         ChatStyle,
         RpFormatting,
         Timestamps,
         Sidebar,
+        Buddy,
         SplitChats,
         SaveLogs,
         KeepHistory,
+        ReopenTabs,
         ConfirmActions,
         AutoRequeue,
         RequeueDelay,
@@ -260,6 +285,7 @@ pub fn rows(s: &Settings) -> Vec<Row> {
         ServerUrl,
         AutoReconnect,
         SendLanguage,
+        AiAccess,
         Bell,
         TitleFlash,
         Desktop,
@@ -293,7 +319,9 @@ impl App {
                 s.transparent_background ^= true;
                 self.refresh_theme();
             }
-            ChatStyle | MaxRows | MaxCols | TrafficCapacity => return self.adjust_setting(row, 1),
+            ChatStyle | PopupStyle | AiAccess | MaxRows | MaxCols | TrafficCapacity | Buddy => {
+                return self.adjust_setting(row, 1);
+            }
             Timestamps => s.timestamps ^= true,
             RpFormatting => s.rp_formatting ^= true,
             Emoji => s.emoji_shortcodes ^= true,
@@ -304,6 +332,7 @@ impl App {
             Sidebar => s.show_sidebar ^= true,
             SplitChats => s.split_chats ^= true,
             KeepHistory => s.keep_history ^= true,
+            ReopenTabs => s.reopen_tabs ^= true,
             SaveLogs => {
                 s.save_logs ^= true;
                 if s.save_logs {
@@ -389,6 +418,14 @@ impl App {
                 return self.set_theme(&name, true);
             }
             ChatStyle => s.chat_style = if delta < 0 { s.chat_style.prev() } else { s.chat_style.next() },
+            PopupStyle => s.popup_style = s.popup_style.step(delta),
+            AiAccess => s.ai_access = s.ai_access.step(delta),
+            Buddy => {
+                let mut names: Vec<String> = self.buddies.iter().map(|b| b.name.clone()).collect();
+                names.insert(0, String::new());
+                let i = names.iter().position(|n| *n == s.buddy).unwrap_or(0) as i32;
+                s.buddy = names[(i + delta).rem_euclid(names.len() as i32) as usize].clone();
+            }
             MaxRows => s.images.max_rows = (s.images.max_rows as i32 + delta).clamp(2, 60) as u16,
             RequeueDelay => s.requeue_delay_secs = (s.requeue_delay_secs as i64 + delta as i64).clamp(0, 120) as u64,
             SkipMinShared => {

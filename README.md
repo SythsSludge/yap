@@ -72,6 +72,30 @@ indicator, block, disconnect, themes, notifications), plus the following:
   off in *Settings → Emoji shortcodes*.
 - **Stats**: `/stats` shows partners met, auto-skips, messages and time chatting, for
   this session and all time. Kept locally.
+- **Writing comfort**: `Alt-Enter` (or `Shift-Enter` where the terminal reports it)
+  starts a new paragraph right in the message box; paragraphs are joined with your
+  separator when sent. `Ctrl-Z` / `Ctrl-Y` undo and redo, a word at a time.
+- **More Tab completion**: after a command, Tab fills in its argument: `/theme n` →
+  `/theme nord`, and likewise profiles, snippets, chat numbers, trusted hosts and file
+  paths (`/log ~/Doc` → `/log ~/Documents/`).
+- **Emoji picker**: `Alt-E` (or `/emoji`) opens a searchable grid; Enter inserts.
+- **Link hints**: `Alt-L` puts a letter on every link on screen. Press the letter to
+  open it (images preview), or Shift plus the letter to copy it.
+- **Split view**: `Alt-V` puts another chat, or the traffic log, beside this one;
+  `Alt-O` (or a click) switches which chat you're typing in.
+- **Tabs come back**: the chat tabs you had open, each with its profile, reopen next
+  time (*Settings → Reopen chat tabs at startup*).
+- **When to look**: `/stats` charts how busy the site is by hour and which hours you
+  match quickest, from your own searches.
+- **A buddy**: a little companion by the message box (a fox, unless you pick another)
+  that reacts to matches, messages, your name, hearts, partners leaving and more, with
+  the odd comment. Click to pet it. `/buddy cat`, `/buddy off`, or *Settings → Buddy*.
+  You can draw your own (see below).
+- **Small touches**: a line marks long pauses and new days in the chat; your
+  character's name is highlighted when your partner uses it; the window title counts
+  unseen messages; errors stay up until `Esc` or a click; footer hints are clickable;
+  in a narrow terminal `Ctrl-S` shows the sidebar over the chat; the first start walks
+  you to your profile.
 - **Image viewer**: `←`/`→` step through every image in the chat, with where it came
   from, its size and a button row along the bottom. Untrusted hosts ask right there.
 - **Mouse**: click tabs, chats, list rows (double-click to activate), messages to open
@@ -98,6 +122,9 @@ yap [--profile NAME] [--theme NAME] [--server wss://…] [--traffic-log FILE] [-
 yap probe [SECONDS]              # connect, print raw traffic, disconnect (never searches)
 yap export FILE [--profile NAME] # .toml or .json
 yap import FILE [--with-settings]
+yap mcp                          # MCP server for AI apps (they start it; see below)
+yap backup FILE [--with-logs]    # settings, profiles, themes, buddies, drawer, stats, history
+yap restore FILE                 # replaced files are kept as <name>.before-restore
 yap themes | yap paths
 ```
 
@@ -123,6 +150,11 @@ keypress (a ratatui-image limitation). Turning off *Settings → Image previews*
 | `Alt-/` | search this chat |
 | `Alt-K` | your partner's kinks next to yours, explained |
 | `Alt-S` | fix the misspelled word at the cursor |
+| `Alt-E` | emoji picker |
+| `Alt-L` | link hints: open a link by letter |
+| `Alt-V` / `Alt-O` | split view / switch pane |
+| `Alt-Enter` | new paragraph in the message box |
+| `Ctrl-Z` / `Ctrl-Y` | undo / redo in the message box |
 | `Alt-N` / `Alt-W` | open / close a chat |
 | `Ctrl-PgUp` / `Ctrl-PgDn` | previous / next chat |
 | `Ctrl-D` | leave partner; while searching, stop searching |
@@ -172,6 +204,12 @@ literal `/`. While you type a command, matching ones are listed above the input,
 - `~/.local/share/yap/stats.toml`: your chat statistics.
 - `~/.local/share/yap/history.jsonl`: partner history (private, 0600).
 - `~/.config/yap/dictionaries/<lang>.aff` / `.dic`: extra spellcheck dictionaries.
+  `/dict get en-GB` downloads one from wooorm/dictionaries and switches to it;
+  `/dict use <lang>` switches between those you have.
+- `~/.config/yap/buddies/*.toml`: your own buddies.
+- `~/.local/share/yap/tabs.toml`: the tabs to reopen.
+- `~/.local/share/yap/activity.json`: how busy the site is and how long searches take,
+  by hour.
 - `~/.local/share/yap/logs/*.jsonl`: chat logs, one file per partner, only when *Save chat
   logs to disk* is on. The folder is private (0700) and the files are 0600. Deleting a chat
   in the Logs tab deletes its file.
@@ -199,6 +237,41 @@ accepts `#tag` terms too.
 In the browser console on yiffspot.com, run `copy(JSON.stringify(localStorage))`. Paste
 the result into a `.json` file, then `/import` it (or run `yap import file.json`).
 
+### Your own buddy
+
+A buddy is up to 3 lines tall and 12 columns wide. Each mood is a list of frames that
+loop; any mood you leave out uses `idle`. `extends` borrows everything else from
+another buddy, and `[says]` replaces what it says for an event (`{partner_species}` and
+the other snippet placeholders work). Files are picked up as soon as you save them.
+
+```toml
+# ~/.config/yap/buddies/bun.toml
+extends = "cat"        # optional
+color = "#f7768e"      # optional; the theme's accent otherwise
+speed = 600            # ms per frame
+
+[moods]
+idle = ['''
+ (\_/)
+ ( •.•)
+ / >♥ ''', '''
+ (\_/)
+ ( -.-)
+ / >♥ ''']
+happy = ['''
+ (\_/)
+ ( ^.^)
+ / >♥ ''']
+
+[says]
+matched = ["a {partner_species}! hi!", "*hops over*"]
+petted = ["*nose wiggle*"]
+```
+
+Moods: `idle happy excited love sad surprised sleepy curious searching proud dizzy`.
+Events for `[says]`: `matched shared_kinks message mentioned heart typing sent
+long_post left dropped skipped blocked searching connection_lost reconnected petted`.
+
 ### Custom themes
 
 ```toml
@@ -212,6 +285,37 @@ bg = "default"                 # terminal background
 Colour slots: `bg fg muted surface accent you partner system link highlight selection_bg
 selection_fg success warning error traffic_in traffic_out`. Values can be `#rrggbb`,
 `#rgb`, names like `lightblue`, palette indexes `0`–`255`, or `default`.
+*Settings → Popup style* sets how popups look: `outline` (a border, filled inside
+it), `solid` (a filled card with no line, which suits transparent terminals), or
+`clear` (see-through).
+
+A custom theme whose text would be hard to read on its background gets a warning when
+it loads.
+
+## AI tools (MCP)
+
+yap can lend its chats to an AI app (Claude Desktop, Claude Code, or anything else
+that speaks MCP), which can then translate, summarise a long chat, suggest a reply,
+polish your draft, or look through your logs and history for you. yap doesn't include
+an AI or hold any keys; it offers tools, and the AI app you already use does the rest.
+
+1. In yap: *Settings → AI tools (yap mcp)*: `read` lets the AI read your chats, logs,
+   history and stats. `full` also lets it draft into your message box, find, skip,
+   leave and block partners, switch profiles, nickname partners, and save snippets and
+   links. Each change shows a toast, and `· ai` appears in the header while it's active.
+2. Tell your AI app to run `yap mcp`. For Claude Code: `claude mcp add yap -- yap mcp`.
+   For Claude Desktop, add this to its config:
+
+   ```json
+   { "mcpServers": { "yap": { "command": "yap", "args": ["mcp"] } } }
+   ```
+
+The AI works with the yap you have open (over a private local socket only you can use).
+**It never sends a message on its own**: when it asks to, yap shows you the message,
+and `y` sends it, `e` puts it in your message box to edit, and `n` declines. Keep in
+mind that whatever the AI reads, your partner's messages included, goes to that AI's
+provider, and your partner hasn't agreed to that. A local model avoids it, and hosted
+models may decline explicit content anyway.
 
 ## Images and privacy
 

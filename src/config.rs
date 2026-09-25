@@ -8,6 +8,65 @@ use std::path::{Path, PathBuf};
 
 pub const DEFAULT_SERVER: &str = "wss://www.yiffspot.com/";
 
+/// What an AI app connected through `yap mcp` may do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiAccess {
+    #[default]
+    Off,
+    /// Chats, logs, history, stats.
+    Read,
+    /// Also drafts, finding and leaving partners, profiles, snippets; sending asks first.
+    Full,
+}
+
+impl AiAccess {
+    const ALL: [AiAccess; 3] = [AiAccess::Off, AiAccess::Read, AiAccess::Full];
+
+    pub fn step(self, delta: i32) -> Self {
+        let i = Self::ALL.iter().position(|s| *s == self).unwrap_or(0) as i32;
+        Self::ALL[(i + delta).rem_euclid(Self::ALL.len() as i32) as usize]
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            AiAccess::Off => "off",
+            AiAccess::Read => "read",
+            AiAccess::Full => "full",
+        }
+    }
+}
+
+/// How popups and other floating boxes are drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PopupStyle {
+    /// A rounded border line, filled only inside it.
+    #[default]
+    Outline,
+    /// A filled card with half-block edges and no line.
+    Solid,
+    /// The border line and nothing behind it: fully see-through.
+    Clear,
+}
+
+impl PopupStyle {
+    const ALL: [PopupStyle; 3] = [PopupStyle::Outline, PopupStyle::Solid, PopupStyle::Clear];
+
+    pub fn step(self, delta: i32) -> Self {
+        let i = Self::ALL.iter().position(|s| *s == self).unwrap_or(0) as i32;
+        Self::ALL[(i + delta).rem_euclid(Self::ALL.len() as i32) as usize]
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PopupStyle::Outline => "outline",
+            PopupStyle::Solid => "solid",
+            PopupStyle::Clear => "clear",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ChatStyle {
@@ -148,6 +207,7 @@ pub struct Settings {
     pub chat_style: ChatStyle,
     /// Don't paint a background, so a transparent terminal shows through.
     pub transparent_background: bool,
+    pub popup_style: PopupStyle,
     /// Show `*actions*` in italics and `((asides))` dimmed. Display only.
     pub rp_formatting: bool,
     /// Turn `:smile:` into the emoji when sending, and complete shortcodes with Tab.
@@ -158,6 +218,10 @@ pub struct Settings {
     pub spell_language: String,
     /// Words you've added to the dictionary.
     pub spell_words: Vec<String>,
+    /// The buddy beside the message box (`fox`, `cat`, `blob`, your own), or empty for none.
+    pub buddy: String,
+    /// What an AI app may do through `yap mcp`.
+    pub ai_access: AiAccess,
     /// Start each partner in a fresh chat view instead of one endless scroll. Earlier
     /// chats stay available in the Logs tab either way.
     pub split_chats: bool,
@@ -166,6 +230,8 @@ pub struct Settings {
     pub save_logs: bool,
     /// Remember who you met and how it went (no messages) in `history.jsonl`.
     pub keep_history: bool,
+    /// Open the same chat tabs (and their profiles) as last time.
+    pub reopen_tabs: bool,
     pub show_sidebar: bool,
     pub auto_reconnect: bool,
     /// Ask before leaving, blocking or re-rolling a partner.
@@ -196,14 +262,18 @@ impl Default for Settings {
             timestamps: true,
             chat_style: ChatStyle::default(),
             transparent_background: false,
+            popup_style: PopupStyle::default(),
             rp_formatting: true,
             emoji_shortcodes: true,
             spellcheck: true,
             spell_language: "en_US".into(),
             spell_words: Vec::new(),
+            buddy: "fox".into(),
+            ai_access: AiAccess::default(),
             split_chats: false,
             save_logs: false,
             keep_history: true,
+            reopen_tabs: true,
             show_sidebar: true,
             auto_reconnect: true,
             confirm_actions: true,
@@ -532,6 +602,32 @@ pub fn expand_tilde(input: &str) -> PathBuf {
     }
 }
 
+/// Files and folders that `typed` (a path as typed, `~` allowed) could become: the
+/// entries of its folder that start with its last part. Folders end in `/`. Hidden
+/// entries only show when the last part starts with a dot.
+pub fn complete_path(typed: &str, limit: usize) -> Vec<String> {
+    let (dir_part, prefix) = match typed.rfind('/') {
+        Some(i) => (&typed[..=i], &typed[i + 1..]),
+        None => ("", typed),
+    };
+    let dir = if dir_part.is_empty() { PathBuf::from(".") } else { expand_tilde(dir_part) };
+    let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let mut found: Vec<(bool, String)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_str()?.to_owned();
+            let shown = name.starts_with(prefix) && (prefix.starts_with('.') || !name.starts_with('.'));
+            shown.then(|| (e.path().is_dir(), name))
+        })
+        .collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+    found
+        .into_iter()
+        .take(limit)
+        .map(|(is_dir, name)| format!("{dir_part}{name}{}", if is_dir { "/" } else { "" }))
+        .collect()
+}
+
 /// Where everything lives on disk.
 #[derive(Debug, Clone)]
 pub struct Paths {
@@ -543,6 +639,8 @@ pub struct Paths {
     pub downloads_dir: PathBuf,
     pub stats_file: PathBuf,
     pub history_file: PathBuf,
+    pub tabs_file: PathBuf,
+    pub activity_file: PathBuf,
     pub data_dir: PathBuf,
 }
 
@@ -558,6 +656,8 @@ impl Paths {
             logs_dir: dirs.data_dir().join("logs"),
             stats_file: dirs.data_dir().join("stats.toml"),
             history_file: dirs.data_dir().join("history.jsonl"),
+            tabs_file: dirs.data_dir().join("tabs.toml"),
+            activity_file: dirs.data_dir().join("activity.json"),
             downloads_dir: directories::UserDirs::new()
                 .and_then(|d| d.download_dir().map(Path::to_path_buf))
                 .or_else(|| directories::BaseDirs::new().map(|d| d.home_dir().join("Downloads")))
@@ -576,6 +676,8 @@ impl Paths {
             logs_dir: dir.join("logs"),
             stats_file: dir.join("stats.toml"),
             history_file: dir.join("history.jsonl"),
+            tabs_file: dir.join("tabs.toml"),
+            activity_file: dir.join("activity.json"),
             downloads_dir: dir.join("downloads"),
             data_dir: dir.to_owned(),
         }

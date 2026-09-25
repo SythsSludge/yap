@@ -11,13 +11,23 @@ const CHECK_EVERY: Duration = Duration::from_secs(1);
 pub struct Watch {
     config: Option<SystemTime>,
     themes: Option<(usize, SystemTime)>,
+    buddies: Option<(usize, SystemTime)>,
     next_check: Option<Instant>,
 }
 
 impl Watch {
     pub fn new(paths: &Paths) -> Self {
-        Watch { config: modified(&paths.config_file), themes: themes_stamp(&paths.themes_dir), next_check: None }
+        Watch {
+            config: modified(&paths.config_file),
+            themes: themes_stamp(&paths.themes_dir),
+            buddies: themes_stamp(&buddies_dir(paths)),
+            next_check: None,
+        }
     }
+}
+
+fn buddies_dir(paths: &Paths) -> std::path::PathBuf {
+    paths.config_file.parent().map(|d| d.join("buddies")).unwrap_or_default()
 }
 
 fn modified(path: &Path) -> Option<SystemTime> {
@@ -55,6 +65,14 @@ impl App {
         if themes != self.watch.themes {
             self.watch.themes = themes;
             self.reload_themes();
+        }
+        let buddies = themes_stamp(&buddies_dir(&self.paths));
+        if buddies != self.watch.buddies {
+            self.watch.buddies = buddies;
+            for e in self.load_buddies() {
+                self.toast(Level::Warning, e);
+            }
+            self.toast(Level::Info, "Reloaded buddies.");
         }
     }
 

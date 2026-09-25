@@ -139,3 +139,64 @@ fn each_chat_keeps_its_own_profile() {
     h.sync_session_profiles(None);
     assert_eq!(h.others[0].profile, "default");
 }
+
+#[test]
+fn split_view_shows_two_chats_and_switches_between_them() {
+    use crate::app::{Pane, Split};
+    let mut h = harness().online().with_prefs().partnered();
+    h.run_command(Command::NewChat);
+    h.on_net_for(1, NetEvent::Open);
+    alt(&mut h, 'v');
+    assert_eq!(h.split, Some(Split { left: 1, right: Pane::Session(0) }));
+
+    // The other chat is on screen, so its messages don't count as unseen or alert.
+    h.on_net_for(0, NetEvent::Message(ServerMessage::ReceiveMessage("over here".into())));
+    assert_eq!(h.sessions().into_iter().find(|s| s.id == 0).unwrap().unseen, 0);
+    assert!(h.toasts.iter().all(|t| !t.text.contains("New Message")));
+
+    alt(&mut h, 'o');
+    assert_eq!(h.session_id, 0);
+    assert_eq!(h.split, Some(Split { left: 1, right: Pane::Session(0) }), "panes stay put");
+    alt(&mut h, 'o');
+    assert_eq!(h.session_id, 1);
+
+    // A third chat takes the pane you were in.
+    h.run_command(Command::NewChat);
+    assert_eq!(h.split, Some(Split { left: 2, right: Pane::Session(0) }));
+    h.run_command(Command::CloseChat);
+    assert!(h.split.unwrap().shows(h.session_id));
+
+    alt(&mut h, 'v');
+    assert_eq!(h.split.unwrap().right, Pane::Traffic);
+    alt(&mut h, 'v');
+    assert_eq!(h.split, None);
+}
+
+#[test]
+fn tabs_reopen_with_their_profiles() {
+    let mut h = harness().online().with_prefs();
+    h.config.create_profile("vixen", complete_prefs()).unwrap();
+    h.run_command(Command::NewChat);
+    h.switch_profile("vixen");
+    h.run_command(Command::NewChat);
+    h.switch_session(1);
+    h.flush();
+    let saved = crate::app::Tabs::load(&h.paths.tabs_file).unwrap();
+    assert_eq!(saved, crate::app::Tabs { profiles: vec!["default".into(), "vixen".into(), "vixen".into()], active: 1 });
+
+    // Next launch: a fresh app opens the same tabs, and every one connects.
+    let mut next = harness();
+    next.config = h.config.clone();
+    next.restore_tabs(saved);
+    next.take_effects();
+    next.connect_idle();
+    let tagged = next.take_tagged_effects();
+    let mut connected: Vec<u64> =
+        tagged.iter().filter(|(_, e)| matches!(e, Effect::Connect(_))).map(|(id, _)| *id).collect();
+    connected.sort_unstable();
+    assert_eq!(connected, [0], "new tabs connect as they open; only the first was left idle");
+    let profiles: Vec<String> = next.sessions().into_iter().map(|s| s.profile).collect();
+    assert_eq!(profiles, ["default", "vixen", "vixen"]);
+    assert_eq!(next.session_number(), 2);
+    assert_eq!(next.config.active_profile, "vixen");
+}

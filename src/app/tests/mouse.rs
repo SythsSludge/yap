@@ -1,6 +1,7 @@
 //! Clicking.
 
 use super::*;
+use crate::app::chat::ChatMode;
 use pretty_assertions::assert_eq;
 
 #[test]
@@ -81,4 +82,28 @@ fn clicking_a_plain_message_selects_it() {
     let entry = h.chat.entries.len() - 1;
     click_on(&mut h, &Hit::Message { entry, links: vec![] });
     assert_eq!(h.chat.mode, chat::ChatMode::Select(entry));
+}
+
+#[test]
+fn link_hints_open_links_by_letter() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.server(ServerMessage::ReceiveMessage("old https://example.com/old".into()));
+    h.server(ServerMessage::ReceiveMessage("see https://example.com/a and https://example.com/b".into()));
+    frame(&mut h);
+    alt(&mut h, 'l');
+    let ChatMode::Hints(hints) = &h.chat.mode else { panic!("{:?}", h.chat.mode) };
+    let letters: Vec<(char, &str)> = hints.iter().map(|x| (x.label, x.url.as_str())).collect();
+    assert_eq!(
+        letters,
+        [('a', "https://example.com/b"), ('s', "https://example.com/a"), ('d', "https://example.com/old")],
+        "newest first"
+    );
+    h.take_effects();
+    h.press(KeyCode::Char('s'));
+    assert_eq!(h.take_effects(), vec![Effect::OpenUrl("https://example.com/a".into())]);
+    assert_eq!(h.chat.mode, ChatMode::Normal);
+
+    alt(&mut h, 'l');
+    h.press(KeyCode::Char('D'));
+    assert_eq!(h.take_effects(), vec![Effect::Copy("https://example.com/old".into())]);
 }

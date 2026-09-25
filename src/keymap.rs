@@ -68,6 +68,10 @@ actions! {
     SelectMessage => "select-message", "Select a message to quote, copy or save", ["alt+m"];
     SearchChat => "search-chat", "Search this chat", ["alt+/"];
     Spelling => "spelling", "Fix the misspelled word at the cursor", ["alt+s"];
+    EmojiPicker => "emoji", "Pick an emoji", ["alt+e"];
+    LinkHints => "link-hints", "Label the links on screen to open one by letter", ["alt+l"];
+    Split => "split", "Split view: another chat or the traffic log beside this one", ["alt+v"];
+    OtherPane => "other-pane", "Type in the other chat of the split", ["alt+o"];
     Kinks => "kinks", "Kinks, explained: your partner's next to yours", ["alt+k"];
     Drawer => "drawer", "Toggle the drawer panel", ["ctrl+e"];
     Profile => "profile", "Switch profile", ["ctrl+p"];
@@ -236,7 +240,7 @@ impl Chord {
         let shift = self.mods.contains(KeyModifiers::SHIFT);
         match self.code {
             KeyCode::Char('c') if ctrl && !alt => Some("ctrl+c is always quit"),
-            KeyCode::Char('w' | 'u') if ctrl && !alt => Some("it's used for editing text"),
+            KeyCode::Char('w' | 'u' | 'z' | 'y') if ctrl && !alt => Some("it's used for editing text"),
             KeyCode::Char(_) if !ctrl && !alt => Some("it's needed for typing"),
             KeyCode::Left | KeyCode::Right | KeyCode::Backspace if ctrl || alt => Some("it's used for editing text"),
             KeyCode::Enter

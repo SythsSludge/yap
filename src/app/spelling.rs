@@ -27,6 +27,60 @@ impl App {
         }
     }
 
+    fn dictionaries_dir(&self) -> PathBuf {
+        self.paths.config_file.parent().map(|d| d.join("dictionaries")).unwrap_or_default()
+    }
+
+    /// `/dict`, `/dict get en-GB`, `/dict use en-GB`.
+    pub fn dict_command(&mut self, args: &str) {
+        let (verb, lang) = args.split_once(' ').map_or((args, ""), |(v, l)| (v, l.trim()));
+        match (verb, lang) {
+            ("get" | "download", "") | ("use", "") => self.toast(Level::Error, "Which language? e.g. /dict get en-GB"),
+            ("get" | "download", lang) => {
+                self.toast(Level::Info, format!("Downloading the {lang} dictionary…"));
+                self.effect(Effect::FetchDictionary(lang.to_owned()));
+            }
+            ("use", lang) => {
+                self.config.settings.spell_language = lang.to_owned();
+                self.config.settings.spellcheck = true;
+                self.config_changed();
+                self.load_speller();
+                if self.speller.is_some() {
+                    self.toast(Level::Success, format!("Spellcheck uses {lang}."));
+                }
+            }
+            ("" | "list", _) => {
+                let have = crate::spell::installed(&self.dictionaries_dir());
+                let using = self.speller.as_ref().map_or("off".to_owned(), |s| s.source.clone());
+                let have = if have.is_empty() { "none downloaded".to_owned() } else { have.join(", ") };
+                self.toast(Level::Info, format!("Spellcheck: {using}. Downloaded: {have}. /dict get <lang> adds one."));
+            }
+            _ => self.toast(Level::Error, "Use /dict, /dict get <lang> or /dict use <lang>."),
+        }
+    }
+
+    /// A `/dict get` download finished.
+    pub fn on_dictionary(&mut self, language: String, result: Result<String, String>) {
+        match result {
+            Ok(license) => {
+                self.config.settings.spell_language = language.clone();
+                self.config.settings.spellcheck = true;
+                self.config_changed();
+                self.load_speller();
+                self.toast(
+                    Level::Success,
+                    format!("Installed {language} (licence: {license}). Spellcheck uses it now."),
+                );
+            }
+            Err(e) => self.toast(Level::Error, format!("Couldn't get the {language} dictionary: {e}")),
+        }
+    }
+
+    /// Where `/dict get` saves dictionaries.
+    pub fn dictionary_dir(&self) -> PathBuf {
+        self.dictionaries_dir()
+    }
+
     /// Misspelled words in the message box, as byte ranges.
     pub fn misspelled(&self) -> Vec<(usize, usize)> {
         match &self.speller {

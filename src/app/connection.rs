@@ -1,6 +1,7 @@
 //! The socket lifecycle and everything the server tells us.
 
 use super::*;
+use crate::buddy::Event as BuddyEvent;
 
 impl App {
     pub fn connect(&mut self) {
@@ -73,6 +74,7 @@ impl App {
                 (None, None) => "Type /reconnect to reconnect.".to_owned(),
             };
             self.push(EntryKind::Warning(format!("Disconnected from the server: {reason}. {hint}")));
+            self.buddy_event(BuddyEvent::ConnectionLost);
         }
         if had_partner {
             self.flag_undelivered("the connection dropped");
@@ -88,12 +90,20 @@ impl App {
             ServerMessage::ConnectionSuccess { token } => {
                 self.token = Some(token);
                 self.status = ConnStatus::Online;
+                if self.reconnect_attempt > 0 {
+                    self.buddy_event(BuddyEvent::Reconnected);
+                }
                 self.reconnect_attempt = 0;
             }
             ServerMessage::ConnectionExists => {
                 self.toast(Level::Warning, "You already have an active session.");
             }
-            ServerMessage::UserCount(n) => self.users_online = Some(n),
+            ServerMessage::UserCount(n) => {
+                self.users_online = Some(n);
+                if self.activity.online(Local::now(), n) {
+                    self.dirty_activity = true;
+                }
+            }
             ServerMessage::ReceiveMessage(text) => {
                 let text = crate::text::sanitize(&text);
                 self.chat.partner_typing = false;
@@ -101,8 +111,20 @@ impl App {
                 self.clock.last_heard = Some(self.now);
                 self.request_images(&text);
                 self.count(|s| s.received += 1);
+                let mut names = self.config.settings.notify.keywords.clone();
+                names.push(self.config.active().character.clone());
+                names.retain(|n| !n.trim().is_empty());
+                let named = !crate::text::find_keywords(&text, &names).is_empty();
                 let mentioned = !crate::text::find_keywords(&text, &self.config.settings.notify.keywords).is_empty();
+                let heart = ["❤", "♥", "<3", "💕", "💖", "😍", "🥰"].iter().any(|h| text.contains(h));
                 self.push(EntryKind::Partner(text));
+                self.buddy_event(if named {
+                    BuddyEvent::Mentioned
+                } else if heart {
+                    BuddyEvent::Heart
+                } else {
+                    BuddyEvent::Message
+                });
                 if mentioned {
                     self.alert("Mentioned you");
                 } else if self.config.settings.notify.on_message {
@@ -110,7 +132,11 @@ impl App {
                 }
             }
             ServerMessage::PartnerTyping(on) => {
+                let started = on && self.has_partner() && !self.chat.partner_typing;
                 self.chat.partner_typing = on && self.has_partner();
+                if started {
+                    self.buddy_event(BuddyEvent::Typing);
+                }
                 self.clock.typing_since =
                     if self.chat.partner_typing { self.clock.typing_since.or(Some(self.now)) } else { None };
             }
@@ -129,6 +155,7 @@ impl App {
                 self.system("Your yiffing partner has left.");
                 self.flag_undelivered("they left");
                 self.end_conversation(Outcome::TheyLeft);
+                self.buddy_event(BuddyEvent::Left);
                 self.alert("Partner Left");
                 self.schedule_requeue();
             }
@@ -138,6 +165,7 @@ impl App {
                 self.system("Your yiffing partner has disconnected unexpectedly.");
                 self.flag_undelivered("they disconnected");
                 self.end_conversation(Outcome::TheyDropped);
+                self.buddy_event(BuddyEvent::Dropped);
                 self.schedule_requeue();
                 self.alert("Partner Disconnected");
             }
@@ -145,6 +173,7 @@ impl App {
                 if self.has_partner() {
                     self.system("Your partner has been blocked and disconnected from you.");
                     self.end_conversation(Outcome::YouBlocked);
+                    self.buddy_event(BuddyEvent::Blocked);
                     self.schedule_requeue();
                 } else {
                     let kind = EntryKind::System("Your previous partner has been blocked.".into());
@@ -212,8 +241,12 @@ impl App {
         if self.auto_skip(&info) {
             return;
         }
+        if let Some(since) = self.clock.searching_since {
+            self.activity.searched(Local::now(), self.now.saturating_duration_since(since).as_secs());
+            self.dirty_activity = true;
+        }
         let mine = &self.config.active().preferences.kinks;
-        let common = info
+        let common: Vec<String> = info
             .kink_list()
             .into_iter()
             .filter(|k| *k != ANY && mine.iter().any(|m| m == k))
@@ -231,6 +264,7 @@ impl App {
         if let Some(lang) = &info.language {
             self.system(format!("Your partner's language is {lang}"));
         }
+        let shared = common.len();
         self.push(EntryKind::PartnerInfo { info: info.clone(), common });
         self.partner = PartnerState::Connected(info);
         self.clock.partner_since = Some(self.now);
@@ -239,6 +273,7 @@ impl App {
             self.tab = Tab::Chat;
         }
         self.alert("Partner Connected");
+        self.buddy_event(if shared >= 3 { BuddyEvent::SharedKinks } else { BuddyEvent::Matched });
     }
 
     /// Attention-grabbing. While the terminal is in the background: title flash, bell,
@@ -300,13 +335,16 @@ impl App {
         }
     }
 
-    /// The terminal title: flashes the pending alert while unfocused.
+    /// The terminal title: flashes the pending alert while unfocused, and counts
+    /// messages you haven't seen yet.
     pub fn window_title(&self) -> String {
+        let unread = self.unseen + self.others.iter().map(|s| s.unseen).sum::<usize>();
+        let name = if unread > 0 { format!("({unread}) yap") } else { "yap".into() };
         match &self.alert {
             Some((msg, since)) if (self.now.duration_since(*since).as_millis() / 700).is_multiple_of(2) => {
-                format!("{msg} · yap")
+                format!("{msg} · {name}")
             }
-            _ => "yap".into(),
+            _ => name,
         }
     }
 }

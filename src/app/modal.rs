@@ -90,6 +90,15 @@ pub enum Modal {
     },
     /// Chat statistics.
     Stats,
+    /// A message the AI wants to send; y sends it.
+    AiSend(super::AiSend),
+    /// Shown on the very first start.
+    Welcome,
+    /// Browse and search emoji; typing filters.
+    Emoji {
+        query: String,
+        selected: usize,
+    },
     /// Fixes for a misspelled word in the message box (bytes `start..end`). The row
     /// after the suggestions adds the word to your dictionary.
     Spelling {

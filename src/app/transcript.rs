@@ -79,6 +79,45 @@ impl App {
                 self.search_key(search, key);
                 true
             }
+            ChatMode::Hints(hints) => {
+                self.hint_key(&hints, key);
+                true
+            }
+        }
+    }
+
+    /// alt+l: put a letter on each link in view (the newest get the easiest letters).
+    pub fn start_link_hints(&mut self) {
+        self.tab = Tab::Chat;
+        let (first, last) = self.chat.visible.unwrap_or((0, self.chat.entries.len().saturating_sub(1)));
+        let mut links = Vec::new();
+        for entry in (first..=last.min(self.chat.entries.len().saturating_sub(1))).rev() {
+            let Some(text) = self.chat.entries.get(entry).and_then(|e| e.message_text()) else { continue };
+            for link in find_links(text).into_iter().rev() {
+                links.push((entry, link.start, link.url));
+            }
+        }
+        if links.is_empty() {
+            return self.toast(Level::Info, "No links on screen.");
+        }
+        let hints = links
+            .into_iter()
+            .zip(chat::HINT_LETTERS.chars())
+            .map(|((entry, start, url), label)| chat::LinkHint { entry, start, url, label })
+            .collect();
+        self.chat.mode = ChatMode::Hints(hints);
+    }
+
+    /// A letter opens its link (images preview); shifted, it copies instead.
+    fn hint_key(&mut self, hints: &[chat::LinkHint], key: KeyEvent) {
+        self.chat.mode = ChatMode::Normal;
+        let KeyCode::Char(c) = key.code else { return };
+        let Some(hint) = hints.iter().find(|h| h.label == c.to_ascii_lowercase()) else { return };
+        let url = hint.url.clone();
+        if c.is_ascii_uppercase() {
+            self.copy(&url);
+        } else {
+            self.open_link(&url);
         }
     }
 

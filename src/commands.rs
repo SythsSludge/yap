@@ -61,6 +61,14 @@ pub enum Command {
     Select,
     /// Show chat statistics.
     Stats,
+    /// Pick a buddy, turn it off, or list them.
+    Buddy(Option<String>),
+    /// Back up everything (not chat logs) to a file.
+    Backup(String),
+    /// Spellcheck dictionaries: list, `get <lang>`, `use <lang>`.
+    Dict(Option<String>),
+    /// Open the emoji picker.
+    Emoji,
     /// Show partner history.
     History,
     /// Show the partner's kinks with definitions.
@@ -99,11 +107,15 @@ pub const HELP: &[(&str, &str)] = &[
     ("/trust <domain>", "allow image previews from a domain"),
     ("/untrust <domain>", "stop image previews from a domain"),
     ("/log <path>", "save this chat (.txt, .md or .html)"),
+    ("/backup <path>", "save settings, profiles, drawer, stats and history to one file"),
     ("/raw <json>", "send a raw websocket frame"),
     ("/links", "pick a link from the chat"),
     ("/search [text]", "search this chat"),
     ("/select", "select a message to quote, copy or save"),
     ("/stats", "partners met, time chatting and more"),
+    ("/buddy [name|off]", "your companion by the message box"),
+    ("/dict [get|use] [lang]", "spellcheck dictionaries: list, download (e.g. en-GB) or switch"),
+    ("/emoji", "pick an emoji"),
     ("/history", "everyone you've met, how it went, and patterns"),
     ("/kinks", "your partner's kinks next to yours, with what each means"),
     ("/logs", "browse earlier chats"),
@@ -175,9 +187,13 @@ pub fn parse(input: &str) -> Parsed {
         "search" | "grep" => Parsed::Command(Command::Search(opt())),
         "select" | "quote" => Parsed::Command(Command::Select),
         "stats" => Parsed::Command(Command::Stats),
+        "buddy" | "pet" => Parsed::Command(Command::Buddy(opt())),
+        "dict" | "dictionary" => Parsed::Command(Command::Dict(opt())),
+        "emoji" => Parsed::Command(Command::Emoji),
         "history" => Parsed::Command(Command::History),
         "kinks" | "define" => Parsed::Command(Command::Kinks),
         "drawer-export" => need("a file path", Command::DrawerExport),
+        "backup" => need("a file path", Command::Backup),
         "drawer-import" => need("a file path", Command::DrawerImport),
         "leave" | "disconnect" | "dc" => Parsed::Command(Command::Leave),
         "block" => Parsed::Command(Command::Block),

@@ -61,6 +61,18 @@ enum Cmd {
         #[arg(long)]
         with_settings: bool,
     },
+    /// Save settings, profiles, themes, buddies, the drawer, stats and history to one file.
+    Backup {
+        path: PathBuf,
+        /// Include chat logs too.
+        #[arg(long)]
+        with_logs: bool,
+    },
+    /// Put a backup back. Files it replaces are kept as `<name>.before-restore`.
+    Restore { path: PathBuf },
+    /// Run as an MCP server for an AI app (it starts this; you don't). Talks to the
+    /// yap you have open, if Settings → AI tools is on.
+    Mcp,
     /// List available themes.
     Themes,
     /// Show where yap keeps its files.
@@ -70,6 +82,7 @@ enum Cmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let paths = Paths::discover(cli.config.clone())?;
+    let first_run = !paths.config_file.exists();
     let (mut config, warnings) = Config::load(&paths.config_file)?;
     let runtime = tokio::runtime::Runtime::new()?;
 
@@ -95,6 +108,26 @@ fn main() -> Result<()> {
                 eprintln!("warning: {w}");
             }
             return Ok(());
+        }
+        Some(Cmd::Backup { path, with_logs }) => {
+            let backup = yap::backup::Backup::create(&paths, with_logs)?;
+            backup.write(&path)?;
+            println!("Backed up {} files to {}", backup.files.len(), path.display());
+            return Ok(());
+        }
+        Some(Cmd::Restore { path }) => {
+            let written = yap::backup::Backup::read(&path)?.restore(&paths)?;
+            for file in &written {
+                println!("restored {}", file.display());
+            }
+            println!("{} files restored.", written.len());
+            return Ok(());
+        }
+        Some(Cmd::Mcp) => {
+            #[cfg(unix)]
+            return yap::mcp::serve(&mut yap::mcp::SocketRelay { path: yap::mcp::socket_path(&paths) });
+            #[cfg(not(unix))]
+            bail!("yap mcp needs a Unix system for now");
         }
         Some(Cmd::Themes) => {
             let (themes, errors) = yap::theme::load_all(Some(&paths.themes_dir));
@@ -170,7 +203,20 @@ fn main() -> Result<()> {
         let mut app = App::new(paths, config, drawer, themes, picker);
         app.logs = logs;
         app.history = history;
+        match yap::activity::Activity::load(&app.paths.activity_file) {
+            Ok(activity) => app.activity = activity,
+            Err(e) => app.toast(yap::app::Level::Warning, format!("{e:#}; starting fresh")),
+        }
         app.load_speller();
+        for e in app.load_buddies() {
+            app.toast(yap::app::Level::Warning, e);
+        }
+        if first_run {
+            app.welcome();
+        }
+        if let Some(tabs) = yap::app::Tabs::load(&app.paths.tabs_file) {
+            app.restore_tabs(tabs);
+        }
         match stats {
             Ok(stats) => app.stats = stats,
             Err(e) => app.toast(yap::app::Level::Warning, format!("{e:#}; starting fresh stats")),

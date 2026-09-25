@@ -114,11 +114,65 @@ impl Speller {
     }
 }
 
+/// Languages wooorm/dictionaries has, for `/dict get` suggestions. Others work too.
+pub const DOWNLOADABLE: &[&str] = &[
+    "en-GB", "en-AU", "en-CA", "en-ZA", "de", "de-AT", "de-CH", "es", "es-MX", "fr", "it", "nl", "pt", "pt-PT", "sv",
+    "da", "nb", "nn", "fi", "pl", "cs", "ru", "uk", "tr", "ro", "hu", "el", "ca", "gl", "eu",
+];
+
+const DICTIONARIES_URL: &str = "https://raw.githubusercontent.com/wooorm/dictionaries/main/dictionaries";
+
+/// Download `language` from wooorm/dictionaries into `dir` as `<language>.aff` /
+/// `.dic` (plus its licence). Blocking. Returns the licence name.
+pub fn download(language: &str, dir: &Path) -> Result<String, String> {
+    if language.is_empty() || !language.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(format!("`{language}` isn't a dictionary name (try en-GB or de)"));
+    }
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(60)))
+        .user_agent(format!("yap/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .into();
+    let get = |file: &str| -> Result<String, String> {
+        let url = format!("{DICTIONARIES_URL}/{language}/{file}");
+        let mut response = agent.get(&url).call().map_err(|e| match e {
+            ureq::Error::StatusCode(404) => format!("there's no `{language}` dictionary to download"),
+            e => e.to_string(),
+        })?;
+        response.body_mut().with_config().limit(64 * 1024 * 1024).read_to_string().map_err(|e| e.to_string())
+    };
+    let (aff, dic) = (get("index.aff")?, get("index.dic")?);
+    // Make sure it loads before keeping it.
+    Speller::from_sources(&aff, &dic, language.to_owned())?;
+    let package = get("package.json").unwrap_or_default();
+    let license = serde_json::from_str::<serde_json::Value>(&package)
+        .ok()
+        .and_then(|v| v.get("license")?.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "see its licence file".into());
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let write = |ext: &str, body: &str| std::fs::write(dir.join(format!("{language}.{ext}")), body);
+    write("aff", &aff).and_then(|()| write("dic", &dic)).map_err(|e| e.to_string())?;
+    if let Ok(text) = get("license") {
+        let _ = write("LICENSE", &text);
+    }
+    Ok(license)
+}
+
+/// Dictionaries in `dir`, by name.
+pub fn installed(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.path().file_name()?.to_str()?.strip_suffix(".dic").map(str::to_owned))
+        .collect();
+    names.sort();
+    names
+}
+
 /// The word at or just before `cursor`, as a byte range.
 pub fn word_at(text: &str, cursor: usize) -> Option<(usize, usize)> {
-    text.unicode_word_indices()
-        .map(|(start, word)| (start, start + word.len()))
-        .rfind(|&(start, _)| start <= cursor)
+    text.unicode_word_indices().map(|(start, word)| (start, start + word.len())).rfind(|&(start, _)| start <= cursor)
 }
 
 #[cfg(test)]
@@ -148,6 +202,24 @@ mod tests {
         s.learn("Zephyrine");
         assert!(s.check("Zephyrine"));
         assert!(s.suggest("helo").iter().any(|w| w == "hello"));
+    }
+
+    #[test]
+    #[ignore = "downloads from GitHub"]
+    fn downloads_a_dictionary() {
+        let dir = tempfile::tempdir().unwrap();
+        let license = download("en-GB", dir.path()).unwrap();
+        assert!(!license.is_empty());
+        assert_eq!(installed(dir.path()), ["en-GB"]);
+        let gb = Speller::from_sources(
+            &std::fs::read_to_string(dir.path().join("en-GB.aff")).unwrap(),
+            &std::fs::read_to_string(dir.path().join("en-GB.dic")).unwrap(),
+            "en-GB".into(),
+        )
+        .unwrap();
+        assert!(gb.check("colour"));
+        assert!(download("../etc", dir.path()).is_err());
+        assert!(download("xx-nope", dir.path()).unwrap_err().contains("no `xx-nope`"));
     }
 
     #[test]

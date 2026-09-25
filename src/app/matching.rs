@@ -103,6 +103,7 @@ impl App {
         self.remember(record);
         let who = format!("{} {} {}", info.role, info.gender, info.species);
         self.system(format!("Skipped a {who}: {reason}."));
+        self.buddy_event(crate::buddy::Event::Skipped);
         // Still waiting from the server's point of view, so just ask again.
         self.partner = PartnerState::Searching;
         self.find_partner();

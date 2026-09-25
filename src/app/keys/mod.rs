@@ -78,6 +78,12 @@ fn edit_line(editor: &mut LineEditor, key: &KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     match key.code {
+        KeyCode::Char('z') if ctrl => {
+            editor.undo();
+        }
+        KeyCode::Char('y') if ctrl => {
+            editor.redo();
+        }
         KeyCode::Char('w') if ctrl => editor.delete_word_back(),
         KeyCode::Char('u') if ctrl => editor.delete_to_start(),
         KeyCode::Backspace if ctrl || alt => editor.delete_word_back(),
@@ -178,6 +184,10 @@ impl App {
         if let Some(modal) = self.modal.take() {
             return self.modal_key(modal, key);
         }
+        if key.code == KeyCode::Esc && self.toasts.iter().any(|t| t.level == Level::Error) {
+            self.toasts.retain(|t| t.level != Level::Error);
+            return;
+        }
         if self.global_key(key) {
             return;
         }
@@ -220,6 +230,10 @@ impl App {
             Action::SelectMessage => self.select_message(None),
             Action::SearchChat => self.start_search(None),
             Action::Kinks => self.open_kinks(),
+            Action::Split => self.toggle_split(),
+            Action::OtherPane => self.focus_other_pane(),
+            Action::LinkHints => self.start_link_hints(),
+            Action::EmojiPicker => self.modal = Some(Modal::Emoji { query: String::new(), selected: 0 }),
             Action::Spelling => self.open_spelling(),
             Action::Leave => self.request_leave(),
             Action::Block => self.request_block(),
@@ -227,6 +241,7 @@ impl App {
             Action::Drawer => self.toggle_drawer_panel(),
             Action::Profile => self.open_profile_picker(),
             Action::Theme => self.open_theme_picker(),
+            Action::Sidebar if self.narrow && self.tab == Tab::Chat => self.sidebar_overlay ^= true,
             Action::Sidebar => {
                 self.config.settings.show_sidebar ^= true;
                 self.config_changed();
@@ -266,6 +281,12 @@ impl App {
         // Scrolling is handled by the (rebindable) global keys; Esc always jumps down.
         let modified = key.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT);
         match key.code {
+            // Alt-Enter works everywhere; Shift-Enter where the terminal reports it.
+            KeyCode::Enter if key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) => {
+                self.input.new_paragraph();
+                self.input_changed();
+                return;
+            }
             KeyCode::Enter => return self.submit_input(),
             KeyCode::Up | KeyCode::Down if modified => return,
             KeyCode::Up => {
@@ -282,7 +303,12 @@ impl App {
                 }
                 return;
             }
-            KeyCode::Tab if self.complete_command() || self.complete_snippet() || self.complete_emoji() => {
+            KeyCode::Tab
+                if self.complete_command()
+                    || self.complete_arg()
+                    || self.complete_snippet()
+                    || self.complete_emoji() =>
+            {
                 self.input_changed();
                 return;
             }

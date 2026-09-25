@@ -17,6 +17,85 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 type ImageResult = (String, Result<Loaded, String>);
+type DictResult = (String, Result<String, String>);
+type AiResult = Result<serde_json::Value, String>;
+
+/// A tool call from `yap mcp`, with where to send the answer.
+pub struct AiCall {
+    pub tool: String,
+    pub args: serde_json::Value,
+    pub reply: tokio::sync::oneshot::Sender<AiResult>,
+}
+
+/// The local socket `yap mcp` talks to, while AI tools are on.
+#[derive(Debug)]
+pub struct AiServer {
+    task: tokio::task::JoinHandle<()>,
+    path: std::path::PathBuf,
+}
+
+impl AiServer {
+    fn stop(self) {
+        self.task.abort();
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Listen on `path` (readable only by you), passing each call to `calls`.
+#[cfg(unix)]
+pub fn start_ai_server(path: &std::path::Path, calls: mpsc::UnboundedSender<AiCall>) -> std::io::Result<AiServer> {
+    use std::os::unix::fs::PermissionsExt;
+    if let Some(dir) = path.parent()
+        && !dir.exists()
+    {
+        std::fs::create_dir_all(dir)?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    if path.exists() {
+        if std::os::unix::net::UnixStream::connect(path).is_ok() {
+            return Err(std::io::Error::new(std::io::ErrorKind::AddrInUse, "another yap already has AI tools on"));
+        }
+        std::fs::remove_file(path)?;
+    }
+    let listener = tokio::net::UnixListener::bind(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    let task = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            tokio::spawn(serve_ai_connection(stream, calls.clone()));
+        }
+    });
+    Ok(AiServer { task, path: path.to_owned() })
+}
+
+#[cfg(unix)]
+async fn serve_ai_connection(stream: tokio::net::UnixStream, calls: mpsc::UnboundedSender<AiCall>) {
+    use crate::mcp::{Reply, Request};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let (read, mut write) = stream.into_split();
+    let mut lines = BufReader::new(read).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let reply = match serde_json::from_str::<Request>(&line) {
+            Err(e) => Reply { ok: None, error: Some(format!("bad request: {e}")) },
+            Ok(req) => {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                if calls.send(AiCall { tool: req.tool, args: req.args, reply: tx }).is_err() {
+                    break;
+                }
+                match tokio::time::timeout(Duration::from_secs(5 * 60), rx).await {
+                    Ok(Ok(Ok(value))) => Reply { ok: Some(value), error: None },
+                    Ok(Ok(Err(e))) => Reply { ok: None, error: Some(e) },
+                    Ok(Err(_)) => Reply { ok: None, error: Some("yap closed".into()) },
+                    Err(_) => Reply { ok: None, error: Some("no answer in time (the user didn't respond)".into()) },
+                }
+            }
+        };
+        let mut out = serde_json::to_string(&reply).unwrap_or_default();
+        out.push('\n');
+        if write.write_all(out.as_bytes()).await.is_err() {
+            break;
+        }
+    }
+}
 /// A network event tagged with its session and that session's connection generation.
 type Tagged = (u64, u64, NetEvent);
 
@@ -41,6 +120,13 @@ struct Runtime {
     generation: u64,
     net_tx: mpsc::UnboundedSender<Tagged>,
     img_tx: mpsc::UnboundedSender<ImageResult>,
+    dict_tx: mpsc::UnboundedSender<DictResult>,
+    ai_tx: mpsc::UnboundedSender<AiCall>,
+    ai_server: Option<AiServer>,
+    /// Set after the socket couldn't be opened, so it isn't retried every frame.
+    ai_failed: bool,
+    /// AI calls waiting on the user, by id.
+    ai_pending: HashMap<u64, tokio::sync::oneshot::Sender<AiResult>>,
     options: Options,
 }
 
@@ -65,12 +151,25 @@ where
 {
     let (img_tx, mut img_rx) = mpsc::unbounded_channel();
     let (net_tx, mut net_rx) = mpsc::unbounded_channel::<Tagged>();
-    let mut rt = Runtime { connections: HashMap::new(), generation: 0, net_tx, img_tx, options };
+    let (dict_tx, mut dict_rx) = mpsc::unbounded_channel::<DictResult>();
+    let (ai_tx, mut ai_rx) = mpsc::unbounded_channel::<AiCall>();
+    let mut rt = Runtime {
+        connections: HashMap::new(),
+        generation: 0,
+        net_tx,
+        img_tx,
+        dict_tx,
+        ai_tx,
+        ai_server: None,
+        ai_failed: false,
+        ai_pending: HashMap::new(),
+        options,
+    };
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     let mut title = String::new();
     let mut events = make_events();
 
-    app.connect();
+    app.connect_idle();
     loop {
         app.now = Instant::now();
         for (session, effect) in app.take_tagged_effects() {
@@ -89,6 +188,7 @@ where
             rt.execute(&mut app, session, effect);
         }
         app.flush();
+        rt.sync_ai(&mut app);
         if app.quit {
             break;
         }
@@ -119,6 +219,15 @@ where
                 }
             },
             Some((url, result)) = img_rx.recv() => app.on_image(url, result),
+            Some((language, result)) = dict_rx.recv() => app.on_dictionary(language, result),
+            Some(call) = ai_rx.recv() => match app.ai_call(&call.tool, &call.args) {
+                crate::app::AiOutcome::Done(result) => {
+                    let _ = call.reply.send(result);
+                }
+                crate::app::AiOutcome::Waiting(id) => {
+                    rt.ai_pending.insert(id, call.reply);
+                }
+            },
             _ = tick.tick() => {
                 app.now = Instant::now();
                 app.on_tick();
@@ -127,6 +236,9 @@ where
     }
 
     app.flush();
+    if let Some(server) = rt.ai_server.take() {
+        server.stop();
+    }
     let closing: Vec<NetHandle> = rt.connections.drain().map(|(_, c)| c.handle).collect();
     for handle in &closing {
         handle.send(NetCommand::Close);
@@ -263,7 +375,48 @@ impl Runtime {
                         .spawn();
                 }
             }
+            Effect::FetchDictionary(language) => {
+                let dir = app.dictionary_dir();
+                let tx = self.dict_tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let result = crate::spell::download(&language, &dir);
+                    let _ = tx.send((language, result));
+                });
+            }
+            Effect::AiResolved { id, result } => {
+                if let Some(reply) = self.ai_pending.remove(&id) {
+                    let _ = reply.send(result);
+                }
+            }
             Effect::OpenEditor { .. } => unreachable!("handled by the loop"),
+        }
+    }
+
+    /// Open or close the AI socket to match Settings → AI tools.
+    fn sync_ai(&mut self, app: &mut App) {
+        let wanted = app.config.settings.ai_access != crate::config::AiAccess::Off && self.options.raw_output;
+        if !wanted {
+            self.ai_failed = false;
+            if let Some(server) = self.ai_server.take() {
+                server.stop();
+            }
+            return;
+        }
+        if self.ai_server.is_some() || self.ai_failed {
+            return;
+        }
+        #[cfg(unix)]
+        match start_ai_server(&crate::mcp::socket_path(&app.paths), self.ai_tx.clone()) {
+            Ok(server) => self.ai_server = Some(server),
+            Err(e) => {
+                self.ai_failed = true;
+                app.toast(Level::Error, format!("AI tools couldn't start: {e}"));
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            self.ai_failed = true;
+            app.toast(Level::Warning, "AI tools need a Unix system for now.");
         }
     }
 
@@ -321,5 +474,46 @@ mod tests {
         let seq = notification("yap", "Partner Left", true);
         assert!(seq.starts_with("\x1b]99;i=yap:d=0;yap\x1b\\"));
         assert!(seq.ends_with("p=body;Partner Left\x1b\\"));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod ai_socket_tests {
+    use super::*;
+    use crate::mcp::{Relay, SocketRelay};
+
+    #[tokio::test]
+    async fn relays_calls_over_a_private_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run").join("yap.sock");
+        let (tx, mut rx) = mpsc::unbounded_channel::<AiCall>();
+        let server = start_ai_server(&path, tx.clone()).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(std::fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        assert_eq!(start_ai_server(&path, tx).unwrap_err().kind(), std::io::ErrorKind::AddrInUse);
+
+        tokio::spawn(async move {
+            while let Some(call) = rx.recv().await {
+                let answer = if call.tool == "read_chat" { Ok(call.args) } else { Err("nope".into()) };
+                let _ = call.reply.send(answer);
+            }
+        });
+        let p = path.clone();
+        let (ok, err) = tokio::task::spawn_blocking(move || {
+            let mut relay = SocketRelay { path: p };
+            (relay.call("read_chat", &serde_json::json!({"last": 3})), relay.call("get_stats", &serde_json::json!({})))
+        })
+        .await
+        .unwrap();
+        assert_eq!(ok, Ok(serde_json::json!({"last": 3})));
+        assert_eq!(err, Err("nope".into()));
+
+        server.stop();
+        assert!(!path.exists());
+        let missing = SocketRelay { path }.call("read_chat", &serde_json::json!({}));
+        assert!(missing.unwrap_err().contains("isn't running"));
     }
 }

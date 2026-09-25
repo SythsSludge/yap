@@ -110,6 +110,7 @@ impl Harness {
     }
 }
 
+mod ai;
 mod commands;
 mod drawer;
 mod logs;
@@ -135,6 +136,10 @@ fn select_row(h: &mut Harness, row: settings::Row) {
     let rows = settings::rows(&h.config.settings);
     h.settings_ui.selected = rows.iter().position(|r| *r == row).unwrap();
 }
+fn alt_key(h: &mut Harness, code: KeyCode) {
+    h.on_terminal(Event::Key(KeyEvent::new(code, KeyModifiers::ALT)));
+}
+
 fn alt(h: &mut Harness, c: char) {
     h.on_terminal(Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)));
 }

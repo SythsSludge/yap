@@ -12,7 +12,7 @@ use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, ListItem, Paragraph, Wrap};
 use ratatui_image::{Resize, StatefulImage};
 
 /// Keys that aren't rebindable, shown under the rebindable ones.
@@ -24,14 +24,14 @@ const FIXED_KEYS: &[(&str, &str)] = &[
     ("tab", "switch pane or focus"),
 ];
 
+/// A popup's border and title. Draw [`super::popup_fill`] on the same area first.
 fn frame_block<'a>(app: &App, title: &'a str) -> Block<'a> {
     let t = &app.theme;
-    Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(t.muted))
-        .title(Span::styled(format!(" {} ", title.to_lowercase()), Style::new().fg(t.accent).bold()))
+    let title = Span::styled(format!(" {} ", title.to_lowercase()), Style::new().fg(t.accent).bold());
+    super::popup_block(app, t.surface, Style::new().fg(t.muted))
+        .title(super::popup_title(app, t.surface, vec![title]))
         .padding(ratatui::widgets::Padding::horizontal(1))
-        .style(Style::new().bg(t.surface).fg(t.fg))
+        .style(Style::new().fg(t.fg))
 }
 
 /// The kinks popup: the partner's list against yours, each with its definition.
@@ -167,6 +167,43 @@ fn history_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
+/// The stats popup's "when to look" part: how busy each hour is, and when you match fastest.
+fn when_to_look(app: &App) -> Vec<Line<'static>> {
+    use crate::stats::human_duration;
+    let t = &app.theme;
+    let a = &app.activity;
+    let by_hour = a.online_by_hour();
+    let mut lines = vec![Line::default()];
+    if by_hour.iter().all(Option::is_none) {
+        lines.push(Line::from(Span::styled("busy hours show up after some time online", Style::new().fg(t.muted))));
+        return lines;
+    }
+    let bars: String = crate::activity::sparkline(&by_hour).chars().flat_map(|c| [c, c]).collect();
+    lines.push(Line::from(vec![
+        Span::styled(format!("{:<22}", "online, by hour"), Style::new().fg(t.muted)),
+        Span::styled(bars, Style::new().fg(t.accent)),
+    ]));
+    lines.push(Line::from(Span::styled(
+        format!("{:<22}{:<12}{:<12}{:<12}{}", "", "0", "6", "12", "18"),
+        Style::new().fg(t.muted),
+    )));
+    let quick = a.quickest(3, 3);
+    let text = if quick.is_empty() {
+        "not enough searches yet to say".to_owned()
+    } else {
+        quick
+            .iter()
+            .map(|q| format!("{:02}:00 ({})", q.hour, human_duration(q.wait_secs)))
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
+    lines.push(Line::from(vec![
+        Span::styled(format!("{:<22}", "quickest matches"), Style::new().fg(t.muted)),
+        Span::styled(text, Style::new().fg(t.fg)),
+    ]));
+    lines
+}
+
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
     let Some(modal) = &app.modal else { return };
@@ -185,13 +222,13 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 key("n"),
                 Span::styled(" no", Style::new().fg(t.muted)),
             ]));
-            frame.render_widget(Clear, rect);
+            super::popup_fill(frame, app, rect, t.surface);
             frame.render_widget(Paragraph::new(body).block(frame_block(app, "Confirm")), rect);
         }
         Modal::Stats => {
             use crate::stats::human_duration;
-            let rect = centered(area, 60, 14);
-            frame.render_widget(Clear, rect);
+            let rect = centered(area, 60, 19);
+            super::popup_fill(frame, app, rect, t.surface);
             let block = frame_block(app, "Stats");
             let inner = block.inner(rect);
             frame.render_widget(block, rect);
@@ -219,19 +256,24 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 row("average chat", human_duration(run.average_secs()), human_duration(all.average_secs())),
                 row("longest chat", human_duration(run.longest_secs), human_duration(all.longest_secs)),
                 Line::default(),
+            ];
+            let mut lines = lines;
+            lines.extend(when_to_look(app));
+            lines.extend([
+                Line::default(),
                 Line::from(vec![
                     Span::styled("kept on this machine only · ", Style::new().fg(t.muted)),
                     key("h"),
                     Span::styled(" partner history", Style::new().fg(t.muted)),
                 ]),
-            ];
+            ]);
             frame.render_widget(Paragraph::new(lines), inner);
         }
         Modal::Spelling { word, suggestions, selected, .. } => {
             let rows = suggestions.len() + 1;
             let w = 44.min(area.width.saturating_sub(4));
             let rect = centered(area, w, (rows as u16 + 4).min(area.height.saturating_sub(2)));
-            frame.render_widget(Clear, rect);
+            super::popup_fill(frame, app, rect, t.surface);
             let block = frame_block(app, "Spelling");
             let inner = block.inner(rect);
             frame.render_widget(block, rect);
@@ -248,12 +290,130 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             let list = Rect::new(inner.x, inner.y + 2, inner.width, inner.height.saturating_sub(2));
             super::render_list(frame, app, list, items, super::Rows::new(ListId::Modal, Some(*selected), true));
         }
+        Modal::Emoji { query, selected } => {
+            use crate::emoji::PICKER_COLUMNS as COLS;
+            let picks = crate::emoji::picks(query);
+            let w = (COLS as u16 * 4 + 4).min(area.width.saturating_sub(2));
+            let h = 18.min(area.height.saturating_sub(2));
+            let rect = centered(area, w, h);
+            super::popup_fill(frame, app, rect, t.surface);
+            let block = frame_block(app, "Emoji");
+            let inner = block.inner(rect);
+            frame.render_widget(block, rect);
+            if inner.height < 5 {
+                return;
+            }
+            let search = Line::from(vec![
+                Span::styled("> ", Style::new().fg(t.accent).bold()),
+                Span::styled(query.clone(), Style::new().fg(t.fg)),
+                Span::styled(if query.is_empty() { "search by name…" } else { "" }, Style::new().fg(t.muted)),
+            ]);
+            frame.render_widget(Paragraph::new(search), Rect::new(inner.x, inner.y, inner.width, 1));
+            let grid = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 4);
+            let rows = grid.height as usize;
+            let sel_row = selected / COLS;
+            let first = sel_row.saturating_sub(rows.saturating_sub(1));
+            let lines: Vec<Line> = picks
+                .chunks(COLS)
+                .enumerate()
+                .skip(first)
+                .take(rows)
+                .map(|(r, row)| {
+                    Line::from(
+                        row.iter()
+                            .enumerate()
+                            .map(|(c, p)| {
+                                let on = r * COLS + c == *selected;
+                                let style = if on { Style::new().bg(t.selection_bg) } else { Style::new() };
+                                Span::styled(format!(" {} ", p.emoji), style)
+                            })
+                            .flat_map(|s| [s, Span::raw(" ")])
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect();
+            frame.render_widget(Paragraph::new(lines), grid);
+            let info = match picks.get(*selected) {
+                Some(p) => Line::from(vec![
+                    Span::styled(format!(":{}:", p.code), Style::new().fg(t.fg).bold()),
+                    Span::styled(format!("  {} · {}", p.name, p.group), Style::new().fg(t.muted)),
+                ]),
+                None => Line::from(Span::styled("no matches", Style::new().fg(t.muted))),
+            };
+            frame.render_widget(Paragraph::new(info), Rect::new(inner.x, inner.bottom() - 1, inner.width, 1));
+        }
+        Modal::AiSend(send) => {
+            let w = 70.min(area.width.saturating_sub(4));
+            let body = crate::text::wrap(&[Span::raw(send.text.clone())], w.saturating_sub(6) as usize, 0);
+            let h = (body.len() as u16 + 6).min(area.height.saturating_sub(2));
+            let rect = centered(area, w, h);
+            super::popup_fill(frame, app, rect, t.surface);
+            let chat = app.sessions().into_iter().find(|s| s.id == send.chat).map_or(0, |s| s.number);
+            let mut lines = vec![
+                Line::from(Span::styled(
+                    format!("The AI wants to send this in chat {chat}:"),
+                    Style::new().fg(t.muted),
+                )),
+                Line::default(),
+            ];
+            lines.extend(body);
+            lines.push(Line::default());
+            lines.push(Line::from(vec![
+                key("y"),
+                Span::styled(" send  ·  ", Style::new().fg(t.muted)),
+                key("e"),
+                Span::styled(" edit it myself  ·  ", Style::new().fg(t.muted)),
+                key("n"),
+                Span::styled(" don't send", Style::new().fg(t.muted)),
+            ]));
+            frame.render_widget(Paragraph::new(lines).block(frame_block(app, "AI message")), rect);
+        }
+        Modal::Welcome => {
+            let rect = centered(area, 70, 15);
+            super::popup_fill(frame, app, rect, t.surface);
+            let block = frame_block(app, "Welcome");
+            let inner = block.inner(rect);
+            frame.render_widget(block, rect);
+            let step = |n: &str, parts: Vec<Span<'static>>| {
+                let mut spans = vec![Span::styled(format!("{n}  "), Style::new().fg(t.accent).bold())];
+                spans.extend(parts);
+                Line::from(spans)
+            };
+            let k = |s: String| Span::styled(s, Style::new().fg(t.fg).bold());
+            let m = |s: &str| Span::styled(s.to_owned(), Style::new().fg(t.muted));
+            let lines = vec![
+                Line::from(Span::styled("Hi! This is yap: YiffSpot in your terminal.", Style::new().fg(t.fg).bold())),
+                Line::from(m("You must be 18 or older to use YiffSpot.")),
+                Line::default(),
+                step("1", vec![m("Say who you are and who you're looking for, in "), k("Preferences".into())]),
+                step(
+                    "2",
+                    vec![
+                        m("Press "),
+                        k(app.keymap.label(crate::keymap::Action::Find)),
+                        m(" to find a partner, then just type"),
+                    ],
+                ),
+                step(
+                    "3",
+                    vec![
+                        k(app.keymap.label(crate::keymap::Action::Help)),
+                        m(" lists every key; "),
+                        k(app.keymap.label(crate::keymap::Action::Palette)),
+                        m(" searches everything"),
+                    ],
+                ),
+                Line::default(),
+                Line::from(vec![key("enter"), m(" set up my profile     "), key("esc"), m(" look around first")]),
+            ];
+            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        }
         Modal::History { scroll } => {
             let rect = centered(area, 96, area.height.saturating_sub(2));
             let block = frame_block(app, "History · ↑/↓ scroll · x forget");
             let width = block.inner(rect).width as usize;
             let lines = history_lines(app, width);
-            frame.render_widget(Clear, rect);
+            super::popup_fill(frame, app, rect, t.surface);
             frame.render_widget(Paragraph::new(lines).block(block).scroll((*scroll, 0)), rect);
         }
         Modal::Kinks { scroll } => {
@@ -261,7 +421,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             let block = frame_block(app, "Kinks · ↑/↓ scroll");
             let width = block.inner(rect).width as usize;
             let lines = kink_lines(app, width);
-            frame.render_widget(Clear, rect);
+            super::popup_fill(frame, app, rect, t.surface);
             frame.render_widget(Paragraph::new(lines).block(block).scroll((*scroll, 0)), rect);
         }
         Modal::Palette { query, selected } => {
@@ -270,7 +430,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             let h = (matches.len() as u16 + 4).clamp(6, 20).min(area.height.saturating_sub(2));
             // Sit in the upper third, like Claude Code's.
             let rect = Rect::new(area.x + (area.width - w) / 2, area.y + area.height / 6, w, h);
-            frame.render_widget(Clear, rect);
+            super::popup_fill(frame, app, rect, t.surface);
             let block = frame_block(app, "Palette");
             let inner = block.inner(rect);
             frame.render_widget(block, rect);
@@ -319,7 +479,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             let visible = app.drawer.filtered_snippets(filter);
             let h = (visible.len() as u16 + 5).clamp(7, area.height.saturating_sub(2));
             let rect = centered(area, 80, h);
-            frame.render_widget(Clear, rect);
+            super::popup_fill(frame, app, rect, t.surface);
             let block = frame_block(app, "Snippets").title_bottom(Line::from(vec![
                 Span::raw(" "),
                 key("enter"),
@@ -371,13 +531,13 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 Line::default(),
                 Line::from(vec![key("esc"), Span::styled(" cancel", Style::new().fg(t.muted))]),
             ];
-            frame.render_widget(Clear, rect);
+            super::popup_fill(frame, app, rect, t.surface);
             frame.render_widget(Paragraph::new(body).block(frame_block(app, "Rebind")), rect);
         }
         Modal::Prompt(prompt) => {
             let w = 72.min(area.width.saturating_sub(4));
             let rect = centered(area, w, 5);
-            frame.render_widget(Clear, rect);
+            super::popup_fill(frame, app, rect, t.surface);
             let block = frame_block(app, &prompt.title);
             let inner = block.inner(rect);
             frame.render_widget(block, rect);
@@ -434,7 +594,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                  yiffspot.com, paste into a .json file, then /import it.",
                 Style::new().fg(t.muted),
             )));
-            frame.render_widget(Clear, rect);
+            super::popup_fill(frame, app, rect, t.surface);
             frame.render_widget(
                 Paragraph::new(lines)
                     .block(frame_block(app, "Help · ↑/↓ scroll"))
@@ -486,7 +646,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 key("t"),
                 Span::raw(" trust host "),
             ]));
-            frame.render_widget(Clear, rect);
+            super::popup_fill(frame, app, rect, t.surface);
             let inner = block.inner(rect);
             frame.render_widget(block, rect);
             super::render_list(frame, app, inner, items, super::Rows::new(ListId::Modal, Some(*selected), true));
@@ -502,7 +662,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     ListItem::new(format!("{} {}", if active { "●" } else { " " }, p.name))
                 })
                 .collect();
-            frame.render_widget(Clear, rect);
+            super::popup_fill(frame, app, rect, t.surface);
             let block = frame_block(app, "Profile");
             let inner = block.inner(rect);
             frame.render_widget(block, rect);
@@ -525,7 +685,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     ]))
                 })
                 .collect();
-            frame.render_widget(Clear, rect);
+            super::popup_fill(frame, app, rect, t.surface);
             let block = frame_block(app, "Theme");
             let inner = block.inner(rect);
             frame.render_widget(block, rect);
@@ -557,7 +717,7 @@ pub fn viewer(frame: &mut Frame, app: &mut App, area: Rect) {
     let host = parsed.as_ref().and_then(|u| u.host_str()).unwrap_or_default().to_owned();
 
     let rect = area.inner(ratatui::layout::Margin::new(2, 1));
-    frame.render_widget(Clear, rect);
+    super::popup_fill(frame, app, rect, t.bg);
     let mut title = vec![Span::raw(" ")];
     if let Some((i, len)) = position {
         title.push(Span::styled(format!("{} / {len}", i + 1), Style::new().fg(t.accent).bold()));
@@ -571,12 +731,11 @@ pub fn viewer(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         title.push(Span::styled("image ", Style::new().fg(t.muted)));
     }
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(t.muted))
-        .title(Line::from(title))
-        .title(Line::from(Span::styled(format!(" {host} "), Style::new().fg(t.muted))).right_aligned())
-        .style(Style::new().bg(t.bg));
+    let block =
+        super::popup_block(app, t.bg, Style::new().fg(t.muted)).title(super::popup_title(app, t.bg, title)).title(
+            super::popup_title(app, t.bg, vec![Span::styled(format!(" {host} "), Style::new().fg(t.muted))])
+                .right_aligned(),
+        );
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     if inner.height < 4 || inner.width < 12 {
