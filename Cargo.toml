@@ -1,6 +1,6 @@
 [package]
 name = "yap"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.90"
 description = "A terminal client for YiffSpot, the anonymous furry roleplay chat (18+)"

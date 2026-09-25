@@ -31,8 +31,10 @@ fn app() -> Harness {
     h
 }
 
+/// A fixed local time, the same wherever the tests run (CI is in UTC).
 fn fixed_time() -> DateTime<Local> {
-    DateTime::from_timestamp(1_700_000_000, 0).unwrap().into()
+    use chrono::TimeZone;
+    Local.with_ymd_and_hms(2023, 11, 15, 9, 13, 20).unwrap()
 }
 
 fn chatting() -> Harness {
@@ -101,7 +103,7 @@ fn drawer_screen_with_tags() {
         url: "https://example.com/gallery".into(),
         label: "Gallery #art #ref".into(),
     });
-    h.drawer.items.iter_mut().for_each(|i| i.added = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap());
+    h.drawer.items.iter_mut().for_each(|i| i.added = fixed_time().to_utc());
     h.toasts.clear();
     h.press(KeyCode::F(4));
     insta::assert_snapshot!(render(&mut h, 100, 16));
