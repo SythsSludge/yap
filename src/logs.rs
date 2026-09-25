@@ -149,12 +149,12 @@ impl Conversation {
         self.entries.as_deref()
     }
 
-    /// Plain-text transcript.
     /// Display names: your character (or "You") and the partner's nickname (or "Partner").
     pub fn names(&self) -> (String, String) {
         (self.me.clone().unwrap_or_else(|| "You".into()), self.partner_nick.clone().unwrap_or_else(|| "Partner".into()))
     }
 
+    /// Plain-text transcript.
     pub fn transcript(&self) -> Option<String> {
         let (you, partner) = self.names();
         let mut out = format!("Chat with {} · started {}\n\n", self.title(), self.started.format("%Y-%m-%d %H:%M:%S"));
