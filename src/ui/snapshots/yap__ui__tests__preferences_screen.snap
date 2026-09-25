@@ -1,0 +1,26 @@
+---
+source: src/ui/tests.rs
+expression: "render(&mut h, 110, 22)"
+---
+" yap   1 Chat  2 Preferences  3 Drawer  4 Traffic  5 Settings                             ○ offline · default "
+"╭ Profiles ────────────╮╭ default ───────────────────────────────────╮┏ Kinks · 2 selected ━━━━━━━━━━━━━━━━━━┓"
+"│● default             ││ Your gender       Male                     │┃[x] Biting                            ┃"
+"│  switchy !           ││ Your species      Wolf                     │┃[ ] Exhibitionism                     ┃"
+"│                      ││ Your role         Switch                   │┃                                      ┃"
+"│                      ││ Partner's gender  Any / All                │┃                                      ┃"
+"│                      ││ Partner's species Any / All                │┃                                      ┃"
+"│                      ││ Partner's role    Dominant                 │┃                                      ┃"
+"│                      ││▍Kinks             Biting +1                │┃                                      ┃"
+"│                      ││ Language          Any / All                │┃                                      ┃"
+"│                      ││                                            │┃                                      ┃"
+"│                      ││                                            │┃                                      ┃"
+"│                      ││                                            │┃                                      ┃"
+"│                      ││                                            │┃                                      ┃"
+"│                      ││                                            │┃                                      ┃"
+"│                      ││                                            │┃                                      ┃"
+"│                      ││✓ Ready to search                           │┃                                      ┃"
+"│                      ││Ctrl-F finds a partner with this profile.   │┃                                      ┃"
+"│                      ││Changes save automatically.                 │┃                                      ┃"
+"│                      ││                                            │┃                                      ┃"
+"╰──────────────────────╯╰────────────────────────────────────────────╯┗ 🔍 bit▏ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛" Hidden by multi-width symbols: [(73, " ")]
+" type filter  Enter/Space toggle  Esc back                                                                    "

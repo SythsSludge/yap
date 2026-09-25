@@ -1,0 +1,20 @@
+---
+source: src/ui/tests.rs
+expression: "render(&mut h, 120, 16)"
+---
+" yap   1 Chat  2 Preferences  3 Drawer  4 Traffic  5 Settings                                       ○ offline · default "
+"┏ Traffic · 4 ↓96 B ↑65 B ● follow heartbeats hidden ━━━━━━━━━━━━━━━━┓╭ Frame ─────────────────────────────────────────╮"
+"┃09:13:20.000 · INFO      37 connecting to wss://www.yiffspot.co…    ┃│#4 → TEXT 38 bytes · 2023-11-15 09:13:20.000    │"
+"┃09:13:20.000 ← TEXT      56 connection_success "1700000000000-a…    ┃│                                                │"
+"┃09:13:20.000 ← TEXT      40 update_user_count 1234                  ┃│{                                               │"
+"┃09:13:20.000 → TEXT      38 send_message "hello"                    ┃│  "data": "hello",                              │"
+"┃                                                                    ┃│  "type": "send_message"                        │"
+"┃                                                                    ┃│}                                               │"
+"┃                                                                    ┃│                                                │"
+"┃                                                                    ┃│                                                │"
+"┃                                                                    ┃│                                                │"
+"┃                                                                    ┃│                                                │"
+"┃                                                                    ┃│                                                │"
+"┃                                                                    ┃│                                                │"
+"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛╰────────────────────────────────────────────────╯"
+" f follow  h heartbeats  p pretty  / filter  s send raw  y copy  e export  c clear                                      "

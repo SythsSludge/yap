@@ -1,0 +1,3 @@
+[submodule "vendor/yiffspot"]
+	path = vendor/yiffspot
+	url = https://github.com/kisuka/YiffSpot.git

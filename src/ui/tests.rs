@@ -1,0 +1,182 @@
+use super::draw;
+use crate::app::Tab;
+use crate::app::chat::EntryKind;
+use crate::app::modal::{Confirm, Modal};
+use crate::app::tests::{Harness, harness};
+use crate::net::{NetEvent, TrafficRecord};
+use crate::protocol::ServerMessage;
+use crate::traffic::{Direction, FrameKind};
+use chrono::{DateTime, Local};
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::crossterm::event::KeyCode;
+
+fn render(app: &mut Harness, w: u16, h: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+    terminal.draw(|f| draw(f, &mut app.app)).unwrap();
+    terminal.backend().to_string()
+}
+
+/// A deterministic app: no timestamps, fixed traffic times.
+fn app() -> Harness {
+    let mut h = harness();
+    h.config.settings.timestamps = false;
+    h
+}
+
+fn fixed_time() -> DateTime<Local> {
+    DateTime::from_timestamp(1_700_000_000, 0).unwrap().into()
+}
+
+fn chatting() -> Harness {
+    let mut h = app().online().with_prefs().partnered();
+    h.server(ServerMessage::ReceiveMessage("hey there! got a ref? https://e621.net/posts/123".into()));
+    h.type_str("sure, one sec");
+    h.press(KeyCode::Enter);
+    h.server(ServerMessage::PartnerTyping(true));
+    h
+}
+
+#[test]
+fn welcome_screen() {
+    let mut h = app();
+    insta::assert_snapshot!(render(&mut h, 100, 24));
+}
+
+#[test]
+fn chat_with_partner() {
+    let mut h = chatting();
+    insta::assert_snapshot!(render(&mut h, 110, 26));
+}
+
+#[test]
+fn compact_chat_with_drawer_panel() {
+    let mut h = chatting();
+    h.config.settings.chat_style = crate::config::ChatStyle::Compact;
+    h.drawer.add("https://e621.net/posts/1", "Ref sheet", chrono::Utc::now()).unwrap();
+    h.ctrl('e');
+    insta::assert_snapshot!(render(&mut h, 110, 22));
+}
+
+#[test]
+fn preferences_screen() {
+    let mut h = app().with_prefs();
+    h.config.create_profile("switchy", Default::default()).unwrap();
+    h.press(KeyCode::F(3));
+    h.prefs_ui.field = 6;
+    h.press(KeyCode::Enter);
+    h.type_str("bit");
+    insta::assert_snapshot!(render(&mut h, 110, 22));
+}
+
+#[test]
+fn traffic_screen() {
+    let mut h = app();
+    let frames = [
+        (Direction::Meta, FrameKind::Info, "connecting to wss://www.yiffspot.com/"),
+        (Direction::In, FrameKind::Text, r#"{"type":"connection_success","data":"1700000000000-abc"}"#),
+        (Direction::In, FrameKind::Text, r#"{"type":"update_user_count","data":1234}"#),
+        (Direction::Out, FrameKind::Text, r#"{"type":"ping","data":true}"#),
+        (Direction::Out, FrameKind::Text, r#"{"type":"send_message","data":"hello"}"#),
+    ];
+    for (dir, kind, body) in frames {
+        h.on_net(NetEvent::Traffic(TrafficRecord { at: fixed_time(), dir, kind, size: body.len(), body: body.into() }));
+    }
+    h.press(KeyCode::F(5));
+    insta::assert_snapshot!(render(&mut h, 120, 16));
+}
+
+#[test]
+fn settings_screen() {
+    let mut h = app();
+    h.paths.config_file = "/home/you/.config/yap/config.toml".into();
+    h.press(KeyCode::F(6));
+    insta::assert_snapshot!(render(&mut h, 90, 20));
+}
+
+#[test]
+fn confirm_modal_and_toast() {
+    let mut h = chatting();
+    h.toast(crate::app::Level::Error, "Please enter a message.");
+    h.modal =
+        Some(Modal::Confirm { text: "Are you sure you want to block this partner?".into(), action: Confirm::Block });
+    let screen = render(&mut h, 100, 24);
+    assert!(screen.contains("Are you sure you want to block this partner?"));
+    assert!(screen.contains("y yes"));
+    assert!(screen.contains("Please enter a message."));
+}
+
+#[test]
+fn scrolled_up_shows_unread_badge() {
+    let mut h = chatting();
+    for i in 0..40 {
+        h.server(ServerMessage::ReceiveMessage(format!("message {i}")));
+    }
+    render(&mut h, 100, 20);
+    h.press(KeyCode::PageUp);
+    h.server(ServerMessage::ReceiveMessage("new one".into()));
+    let screen = render(&mut h, 100, 20);
+    assert!(screen.contains("1 new message"), "{screen}");
+    assert!(!screen.contains("new one"));
+    h.press(KeyCode::Esc);
+    assert!(render(&mut h, 100, 20).contains("new one"));
+}
+
+#[test]
+fn common_kinks_are_highlighted() {
+    let h = chatting();
+    let EntryKind::PartnerInfo { common, .. } =
+        &h.chat.entries.iter().find(|e| matches!(e.kind, EntryKind::PartnerInfo { .. })).unwrap().kind
+    else {
+        unreachable!()
+    };
+    assert_eq!(common.len(), 2);
+    let mut h = h;
+    let mut terminal = Terminal::new(TestBackend::new(110, 26)).unwrap();
+    terminal.draw(|f| draw(f, &mut h.app)).unwrap();
+    let buf = terminal.backend().buffer();
+    let highlight = h.theme.highlight;
+    let highlighted: String = buf.content().iter().filter(|c| c.fg == highlight).map(|c| c.symbol()).collect();
+    assert!(highlighted.contains("Musk") && highlighted.contains("Biting"), "{highlighted}");
+}
+
+#[test]
+fn every_screen_survives_tiny_terminals() {
+    let modals: Vec<fn(&mut Harness)> = vec![
+        |_| {},
+        |h| h.modal = Some(Modal::Help { scroll: 3 }),
+        |h| h.modal = Some(Modal::Confirm { text: "x".repeat(300), action: Confirm::Quit }),
+        |h| h.open_prompt("A long title for a prompt", "/some/path", crate::app::modal::PromptAction::ExportAll),
+        |h| h.open_links(),
+        |h| h.open_profile_picker(),
+        |h| h.open_theme_picker(),
+        |h| h.preview("https://i.imgur.com/a.png"),
+        |h| {
+            for i in 0..6 {
+                h.toast(crate::app::Level::Info, format!("toast number {i} with some text"));
+            }
+        },
+    ];
+    for tab in Tab::ALL {
+        for (i, setup) in modals.iter().enumerate() {
+            for (w, hgt) in [(1, 1), (8, 4), (20, 6), (40, 10), (61, 12)] {
+                let mut h = chatting();
+                h.drawer.add("https://e621.net/posts/1", "Ref", chrono::Utc::now()).unwrap();
+                h.drawer_panel = true;
+                h.tab = tab;
+                setup(&mut h);
+                h.input.set(&"long input ".repeat(40));
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| render(&mut h, w, hgt)));
+                assert!(result.is_ok(), "panicked on {tab:?} modal #{i} at {w}x{hgt}");
+            }
+        }
+    }
+}
+
+#[test]
+fn thousands_separators() {
+    assert_eq!(super::thousands(0), "0");
+    assert_eq!(super::thousands(999), "999");
+    assert_eq!(super::thousands(1_000), "1,000");
+    assert_eq!(super::thousands(1_234_567), "1,234,567");
+}
