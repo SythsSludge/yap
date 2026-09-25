@@ -1,0 +1,20 @@
+---
+source: src/ui/tests.rs
+expression: "render(&mut h, 100, 16)"
+---
+" yap   1 chat  2 preferences  drawer  4 logs  5 traffic  6 settings             ○ offline · default "
+"────────────────────────────────────────────────────────────────────────────────────────────────────"
+" drawer · 2                                      │ details                                          "
+" all   #art 1   #ref 2                           │ label  Gallery                                   "
+"                                                 │ link   https://example.com/gallery               "
+" › Gallery                                       │ tags   #art #ref                                 "
+"   example.com  #art  #ref                       │ added  2023-11-15 09:13                          "
+"   Ref sheet                                     │                                                  "
+"   e621.net  #ref                                │                                                  "
+"                                                 │                                                  "
+"                                                 │                                                  "
+"                                                 │                                                  "
+"                                                 │                                                  "
+"                                                 │                                                  "
+"                                                 │                                                  "
+"  a add · enter open · i insert · p preview · e label · t tags · n note · [ ] tag filter · / search "

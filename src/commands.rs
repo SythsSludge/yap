@@ -11,6 +11,8 @@ pub enum Command {
     Quit,
     Links,
     Drawer,
+    /// Open the chat logs tab.
+    Logs,
     /// Switch profile, or open the picker when no name is given.
     Profile(Option<String>),
     /// Switch theme, or open the picker when no name is given.
@@ -47,7 +49,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("/find", "find a (new) partner with the active profile"),
     ("/leave", "disconnect from your partner"),
     ("/block", "block and leave your partner"),
-    ("/save <url> [label]", "add a link to the drawer"),
+    ("/save <url> [label] [#tags]", "add a link to the drawer"),
     ("/profile [name]", "switch preference profile"),
     ("/theme [name]", "switch theme"),
     ("/export <path>", "export all profiles and settings (.toml/.json)"),
@@ -59,6 +61,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("/log <path>", "save this chat's transcript"),
     ("/raw <json>", "send a raw websocket frame"),
     ("/links", "pick a link from the chat"),
+    ("/logs", "browse earlier chats"),
     ("/drawer", "toggle the drawer"),
     ("/clear", "clear the chat view"),
     ("/reconnect", "reconnect to the server"),
@@ -92,6 +95,7 @@ pub fn parse(input: &str) -> Parsed {
         "quit" | "exit" | "q" => Parsed::Command(Command::Quit),
         "links" => Parsed::Command(Command::Links),
         "drawer" => Parsed::Command(Command::Drawer),
+        "logs" | "history" => Parsed::Command(Command::Logs),
         "profile" | "p" => Parsed::Command(Command::Profile(opt())),
         "theme" => Parsed::Command(Command::Theme(opt())),
         "save" => match arg.split_once(char::is_whitespace) {

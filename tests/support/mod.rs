@@ -250,5 +250,6 @@ pub fn prefs(gender: &str, species: &str) -> yap::protocol::WirePreferences {
     p.toggle(Field::Role, "Switch");
     p.toggle(Field::PartnerRole, "Switch");
     p.toggle(Field::Kinks, "Biting");
+    p.toggle(Field::Kinks, yap::catalog::ANY);
     p.to_wire(true).unwrap()
 }

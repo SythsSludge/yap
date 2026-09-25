@@ -59,6 +59,72 @@ fn compact_chat_with_drawer_panel() {
 }
 
 #[test]
+fn messages_layout() {
+    let mut h = chatting();
+    h.config.settings.chat_style = crate::config::ChatStyle::Sms;
+    h.server(ServerMessage::ReceiveMessage(
+        "a longer reply that should wrap inside its bubble on the left side".into(),
+    ));
+    insta::assert_snapshot!(render(&mut h, 100, 26));
+}
+
+#[test]
+fn logs_screen() {
+    let mut h = chatting();
+    h.server(ServerMessage::PartnerLeft);
+    h.press(KeyCode::F(5));
+    h.press(KeyCode::Enter);
+    insta::assert_snapshot!(render(&mut h, 110, 22));
+}
+
+#[test]
+fn drawer_screen_with_tags() {
+    let mut h = app();
+    h.run_command(crate::commands::Command::Save {
+        url: "https://e621.net/posts/1".into(),
+        label: "Ref sheet #ref".into(),
+    });
+    h.run_command(crate::commands::Command::Save {
+        url: "https://example.com/gallery".into(),
+        label: "Gallery #art #ref".into(),
+    });
+    h.drawer.items.iter_mut().for_each(|i| i.added = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap());
+    h.toasts.clear();
+    h.press(KeyCode::F(4));
+    insta::assert_snapshot!(render(&mut h, 100, 16));
+}
+
+#[test]
+fn transparent_background_paints_nothing() {
+    let mut h = chatting();
+    h.config.settings.transparent_background = true;
+    h.refresh_theme();
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    terminal.draw(|f| draw(f, &mut h.app)).unwrap();
+    let buf = terminal.backend().buffer();
+    // Body cells outside bubbles, popups and chips use the terminal's own background.
+    assert_eq!(buf[(50, 10)].bg, ratatui::style::Color::Reset);
+    assert_eq!(buf[(0, 0)].bg, ratatui::style::Color::Reset);
+}
+
+#[test]
+fn no_emoji_anywhere_in_the_ui() {
+    for mut h in [chatting(), app()] {
+        h.config.settings.images.auto_load = false;
+        h.server(ServerMessage::ReceiveMessage("https://i.imgur.com/x.png".into()));
+        for tab in Tab::ALL {
+            h.tab = tab;
+            let screen = render(&mut h, 120, 30);
+            let emoji: Vec<char> = screen
+                .chars()
+                .filter(|c| matches!(*c as u32, 0x1F000..=0x1FAFF | 0x2600..=0x27BF | 0x2B00..=0x2BFF | 0xFE0F))
+                .collect();
+            assert!(emoji.is_empty(), "{tab:?} shows {emoji:?}");
+        }
+    }
+}
+
+#[test]
 fn preferences_screen() {
     let mut h = app().with_prefs();
     h.config.create_profile("switchy", Default::default()).unwrap();
@@ -82,7 +148,7 @@ fn traffic_screen() {
     for (dir, kind, body) in frames {
         h.on_net(NetEvent::Traffic(TrafficRecord { at: fixed_time(), dir, kind, size: body.len(), body: body.into() }));
     }
-    h.press(KeyCode::F(5));
+    h.press(KeyCode::F(6));
     insta::assert_snapshot!(render(&mut h, 120, 16));
 }
 
@@ -90,7 +156,7 @@ fn traffic_screen() {
 fn settings_screen() {
     let mut h = app();
     h.paths.config_file = "/home/you/.config/yap/config.toml".into();
-    h.press(KeyCode::F(6));
+    h.press(KeyCode::F(7));
     insta::assert_snapshot!(render(&mut h, 90, 20));
 }
 

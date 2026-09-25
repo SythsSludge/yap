@@ -11,18 +11,64 @@ pub struct Item {
     pub url: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     pub added: DateTime<Utc>,
 }
 
 impl Item {
-    /// Case-insensitive match over label, URL and note.
+    /// Every whitespace-separated term must match. `#tag` terms need that exact tag;
+    /// other terms match label, URL, note or tags, ignoring case.
     pub fn matches(&self, filter: &str) -> bool {
-        let f = filter.to_lowercase();
-        f.is_empty()
-            || self.label.to_lowercase().contains(&f)
-            || self.url.to_lowercase().contains(&f)
-            || self.note.to_lowercase().contains(&f)
+        filter.split_whitespace().all(|term| match term.strip_prefix('#') {
+            Some(tag) if !tag.is_empty() => normalize_tag(tag).is_some_and(|t| self.tags.contains(&t)),
+            _ => {
+                let f = term.to_lowercase();
+                self.label.to_lowercase().contains(&f)
+                    || self.url.to_lowercase().contains(&f)
+                    || self.note.to_lowercase().contains(&f)
+                    || self.tags.iter().any(|t| t.contains(&f))
+            }
+        })
     }
+
+    pub fn has_tag(&self, tag: &str) -> bool {
+        self.tags.iter().any(|t| t == tag)
+    }
+}
+
+/// Canonical tag form: lowercase, no leading `#`, inner spaces as `-`, only letters,
+/// digits, `-` and `_`.
+pub fn normalize_tag(input: &str) -> Option<String> {
+    let tag: String = input
+        .trim()
+        .trim_start_matches('#')
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("-")
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    (!tag.is_empty()).then_some(tag)
+}
+
+/// Parse a tag list typed as `ref, nsfw outfits` or `#ref #nsfw`.
+pub fn parse_tags(input: &str) -> Vec<String> {
+    let mut tags = Vec::new();
+    for t in input.split([',', ' ']).filter_map(normalize_tag) {
+        if !tags.contains(&t) {
+            tags.push(t);
+        }
+    }
+    tags
+}
+
+/// Split `my ref sheet #ref #nsfw` into the label and its hashtags.
+pub fn split_label_tags(input: &str) -> (String, Vec<String>) {
+    let (tags, words): (Vec<&str>, Vec<&str>) =
+        input.split_whitespace().partition(|w| w.starts_with('#') && w.len() > 1);
+    (words.join(" "), parse_tags(&tags.join(" ")))
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -55,7 +101,7 @@ pub fn suggest_label(url: &str) -> String {
     };
     u.path_segments()
         .and_then(|mut s| s.rfind(|seg| !seg.is_empty()))
-        .map(|seg| percent_decode(seg))
+        .map(percent_decode)
         .filter(|s| !s.is_empty())
         .map(|seg| format!("{} · {seg}", u.host_str().unwrap_or_default()))
         .unwrap_or_else(|| u.host_str().unwrap_or(url).to_owned())
@@ -81,18 +127,26 @@ impl Drawer {
         crate::config::write_atomic(path, &toml::to_string_pretty(self)?)
     }
 
-    /// Add a link at the top. An empty label gets a suggested one.
+    /// Add a link at the top. `#words` in the label become tags; an empty label gets a
+    /// suggested one.
     pub fn add(&mut self, url: &str, label: &str, now: DateTime<Utc>) -> Result<usize, DrawerError> {
         let url = parse_link(url)?;
         if let Some(existing) = self.items.iter().find(|i| i.url == url) {
             return Err(DrawerError::Duplicate(existing.label.clone()));
         }
-        let label = match label.trim() {
-            "" => suggest_label(&url),
-            l => l.to_owned(),
-        };
-        self.items.insert(0, Item { label, url, note: String::new(), added: now });
+        let (label, tags) = split_label_tags(label);
+        let label = if label.is_empty() { suggest_label(&url) } else { label };
+        self.items.insert(0, Item { label, url, note: String::new(), tags, added: now });
         Ok(0)
+    }
+
+    /// Every tag in use with how many items carry it, alphabetically.
+    pub fn tags(&self) -> Vec<(String, usize)> {
+        let mut counts = std::collections::BTreeMap::new();
+        for tag in self.items.iter().flat_map(|i| &i.tags) {
+            *counts.entry(tag.clone()).or_insert(0) += 1;
+        }
+        counts.into_iter().collect()
     }
 
     pub fn remove(&mut self, index: usize) -> Option<Item> {
@@ -108,9 +162,14 @@ impl Drawer {
         target
     }
 
-    /// Indices of items matching the filter, in display order.
-    pub fn filtered(&self, filter: &str) -> Vec<usize> {
-        self.items.iter().enumerate().filter(|(_, i)| i.matches(filter)).map(|(n, _)| n).collect()
+    /// Indices of items matching the filter (and tag, if any), in display order.
+    pub fn filtered(&self, filter: &str, tag: Option<&str>) -> Vec<usize> {
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| i.matches(filter) && tag.is_none_or(|t| i.has_tag(t)))
+            .map(|(n, _)| n)
+            .collect()
     }
 }
 
@@ -157,15 +216,49 @@ mod tests {
     }
 
     #[test]
+    fn tags_from_labels_and_lists() {
+        assert_eq!(
+            split_label_tags("my ref #Ref #nsfw sheet"),
+            ("my ref sheet".into(), vec!["ref".into(), "nsfw".into()])
+        );
+        assert_eq!(split_label_tags("#only"), (String::new(), vec!["only".into()]));
+        assert_eq!(split_label_tags("C# is # fine"), ("C# is # fine".into(), vec![]));
+        assert_eq!(parse_tags("ref, NSFW  #ref  big outfits"), vec!["ref", "nsfw", "big", "outfits"]);
+        assert_eq!(normalize_tag("  #Ref Sheet! "), Some("ref-sheet".into()));
+        assert_eq!(normalize_tag("#"), None);
+
+        let mut d = Drawer::default();
+        d.add("https://a.com/x.png", "#ref", now()).unwrap();
+        assert_eq!(d.items[0].label, "a.com · x.png", "tag-only labels still get a name");
+        assert_eq!(d.items[0].tags, vec!["ref"]);
+        d.add("https://b.com/", "b #ref #nsfw", now()).unwrap();
+        assert_eq!(d.tags(), vec![("nsfw".into(), 1), ("ref".into(), 2)]);
+    }
+
+    #[test]
+    fn filters_by_tag() {
+        let mut d = Drawer::default();
+        d.add("https://a.com/", "alpha #ref", now()).unwrap();
+        d.add("https://b.com/", "beta #ref #nsfw", now()).unwrap();
+        d.add("https://c.com/", "gamma", now()).unwrap();
+        // Newest first: c, b, a
+        assert_eq!(d.filtered("", Some("ref")), vec![1, 2]);
+        assert_eq!(d.filtered("#nsfw", None), vec![1]);
+        assert_eq!(d.filtered("#ref alpha", None), vec![2]);
+        assert_eq!(d.filtered("nsf", None), vec![1], "plain terms search tags too");
+        assert_eq!(d.filtered("", Some("missing")), Vec::<usize>::new());
+    }
+
+    #[test]
     fn filters_across_fields() {
         let mut d = Drawer::default();
         d.add("https://e621.net/posts/1", "Ref Sheet", now()).unwrap();
         d.add("https://i.imgur.com/x.png", "outfit", now()).unwrap();
         d.items[0].note = "the blue one".into();
-        assert_eq!(d.filtered("ref"), vec![1]);
-        assert_eq!(d.filtered("IMGUR"), vec![0]);
-        assert_eq!(d.filtered("blue"), vec![0]);
-        assert_eq!(d.filtered(""), vec![0, 1]);
+        assert_eq!(d.filtered("ref", None), vec![1]);
+        assert_eq!(d.filtered("IMGUR", None), vec![0]);
+        assert_eq!(d.filtered("blue", None), vec![0]);
+        assert_eq!(d.filtered("", None), vec![0, 1]);
     }
 
     #[test]

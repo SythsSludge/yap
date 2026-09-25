@@ -46,6 +46,8 @@ theme_slots! {
     error: "Errors and destructive actions.",
     traffic_in: "Incoming frames in the traffic viewer.",
     traffic_out: "Outgoing frames in the traffic viewer.",
+    bubble_in: "Background of received message bubbles (messages layout).",
+    bubble_out: "Background of sent message bubbles (messages layout); text uses selection_fg.",
 }
 
 impl Theme {
@@ -131,6 +133,8 @@ fn palette(
         error,
         traffic_in: partner,
         traffic_out: you,
+        bubble_in: surface,
+        bubble_out: accent,
     }
 }
 
@@ -156,6 +160,8 @@ pub fn builtins() -> Vec<Theme> {
             error: Color::Red,
             traffic_in: Color::Magenta,
             traffic_out: Color::Cyan,
+            bubble_in: Color::DarkGray,
+            bubble_out: Color::Blue,
         },
         // The website's default, from `scss/dark.scss`.
         palette(

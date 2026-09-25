@@ -10,12 +10,12 @@ use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Clear, ListItem, ListState, Paragraph, Wrap};
 use ratatui_image::{Resize, StatefulImage};
 
 const KEYS: &[(&str, &str)] = &[
     ("F1", "this help"),
-    ("F2–F6 / Alt-1–5", "switch tabs"),
+    ("F2–F7 / Alt-1–6", "chat, preferences, drawer, logs, traffic, settings"),
     ("Ctrl-F", "find a partner (asks if you already have one)"),
     ("Ctrl-D", "leave partner / stop searching"),
     ("Ctrl-B", "block current or previous partner"),
@@ -35,8 +35,9 @@ fn frame_block<'a>(app: &App, title: &'a str) -> Block<'a> {
     let t = &app.theme;
     Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(t.accent))
-        .title(Span::styled(format!(" {title} "), Style::new().fg(t.accent).bold()))
+        .border_style(Style::new().fg(t.muted))
+        .title(Span::styled(format!(" {} ", title.to_lowercase()), Style::new().fg(t.accent).bold()))
+        .padding(ratatui::widgets::Padding::horizontal(1))
         .style(Style::new().bg(t.surface).fg(t.fg))
 }
 
@@ -47,12 +48,17 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     match modal {
         Modal::Confirm { text, .. } => {
             let w = 60.min(area.width.saturating_sub(4));
-            let lines = crate::text::wrap(&[Span::raw(text.clone())], w.saturating_sub(4) as usize, 0);
+            let lines = crate::text::wrap(&[Span::raw(text.clone())], w.saturating_sub(6) as usize, 0);
             let h = lines.len() as u16 + 4;
             let rect = centered(area, w, h);
             let mut body = lines;
             body.push(Line::default());
-            body.push(Line::from(vec![key("y"), Span::raw(" yes    "), key("n"), Span::raw(" no")]));
+            body.push(Line::from(vec![
+                key("y"),
+                Span::styled(" yes  ·  ", Style::new().fg(t.muted)),
+                key("n"),
+                Span::styled(" no", Style::new().fg(t.muted)),
+            ]));
             frame.render_widget(Clear, rect);
             frame.render_widget(Paragraph::new(body).block(frame_block(app, "Confirm")), rect);
         }
@@ -79,7 +85,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         }
         Modal::Help { scroll } => {
             let rect = centered(area, 84, area.height.saturating_sub(2));
-            let mut lines = vec![Line::from(Span::styled("Keys", Style::new().fg(t.accent).bold()))];
+            let mut lines = vec![Line::from(Span::styled("keys", Style::new().fg(t.accent).bold()))];
             for (k, what) in KEYS {
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {k:<24}"), Style::new().fg(t.fg).bold()),
@@ -88,7 +94,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             }
             lines.push(Line::default());
             lines
-                .push(Line::from(Span::styled("Commands (type in the message box)", Style::new().fg(t.accent).bold())));
+                .push(Line::from(Span::styled("commands (type in the message box)", Style::new().fg(t.accent).bold())));
             for (cmd, what) in HELP {
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {cmd:<24}"), Style::new().fg(t.fg).bold()),
@@ -155,7 +161,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 Span::raw(" trust host "),
             ]));
             frame.render_widget(Clear, rect);
-            frame.render_stateful_widget(List::new(items).block(block).highlight_style(t.selected()), rect, &mut state);
+            frame.render_stateful_widget(super::list(app, items, true).block(block), rect, &mut state);
         }
         Modal::Profiles { selected } => {
             let rect = centered(area, 40, (app.config.profiles.len() as u16 + 2).min(area.height));
@@ -171,7 +177,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             let mut state = ListState::default().with_selected(Some(*selected));
             frame.render_widget(Clear, rect);
             frame.render_stateful_widget(
-                List::new(items).block(frame_block(app, "Profile")).highlight_style(t.selected()),
+                super::list(app, items, true).block(frame_block(app, "Profile")),
                 rect,
                 &mut state,
             );
@@ -196,7 +202,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             let mut state = ListState::default().with_selected(Some(*selected));
             frame.render_widget(Clear, rect);
             frame.render_stateful_widget(
-                List::new(items).block(frame_block(app, "Theme")).highlight_style(t.selected()),
+                super::list(app, items, true).block(frame_block(app, "Theme")),
                 rect,
                 &mut state,
             );
@@ -212,8 +218,8 @@ pub fn viewer(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = truncate(&viewer.url, rect.width.saturating_sub(6) as usize);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(t.accent))
-        .title(Span::styled(format!(" {title} "), Style::new().fg(t.accent)))
+        .border_style(Style::new().fg(t.muted))
+        .title(Span::styled(format!(" {title} "), Style::new().fg(t.muted)))
         .style(Style::new().bg(t.bg));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);

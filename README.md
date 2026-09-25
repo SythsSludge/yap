@@ -9,12 +9,18 @@ indicator, block, disconnect, themes, notifications), plus the following:
 - **Profiles**: named preference sets, switchable with `Ctrl-P`. Export and import as TOML or
   JSON. Imports also accept the website's own `localStorage`, so you can bring your
   browser preferences across.
-- **Drawer**: saved, labelled reference links (ref sheets, galleries). Drop one into the chat
-  from the side panel in two keystrokes.
+- **Drawer**: saved, labelled and tagged reference links (ref sheets, galleries). Filter by
+  tag, and drop one into the chat from the side panel in two keystrokes.
+- **Chat logs**: every partner gets their own conversation in the Logs tab. Logs can be
+  saved to disk (off by default). Optionally, the chat view starts fresh for each partner
+  instead of scrolling forever.
+- **Three chat layouts**: cozy (name above each message), compact (one line each), and
+  messages (bubbles, received on the left, sent on the right).
 - **Inline images** from trusted domains, using the kitty graphics protocol (sixel, iTerm2
   and half-block fallbacks are detected automatically).
 - **Themes**: the site's `dark` / `oled-dark` / `light`, a `terminal` theme that follows your
-  terminal palette, several popular palettes, and your own TOML themes.
+  terminal palette, several popular palettes, and your own TOML themes. A transparent
+  background option lets your terminal's own background show through.
 - **Traffic viewer**: every websocket frame in both directions, including handshake
   headers and ping/pong. Supports filtering, pretty JSON, sending raw frames and JSONL export.
 
@@ -35,12 +41,16 @@ yap themes | yap paths
 `--no-mouse` gives you the terminal's own text selection back. In kitty you can also hold
 Shift while dragging.
 
+At startup yap asks the terminal which image protocol it supports. A terminal that
+ignores status queries can swallow your first keypress (a ratatui-image limitation).
+Turning off *Settings → Image previews* skips the query.
+
 ## Keys
 
 | Key | Action |
 | --- | --- |
 | `F1` | help (all keys and commands) |
-| `F2`–`F6` / `Alt-1`–`5` | Chat, Preferences, Drawer, Traffic, Settings |
+| `F2`–`F7` / `Alt-1`–`6` | Chat, Preferences, Drawer, Logs, Traffic, Settings |
 | `Ctrl-F` | find a partner (asks first if you already have one) |
 | `Ctrl-D` | leave partner; while searching, stop searching |
 | `Ctrl-B` | block current or previous partner |
@@ -66,6 +76,15 @@ literal `/`.
   file is reported, not overwritten.
 - `~/.config/yap/themes/*.toml`: custom themes.
 - `~/.local/share/yap/drawer.toml`: the drawer.
+- `~/.local/share/yap/logs/*.jsonl`: chat logs, one file per partner, only when *Save chat
+  logs to disk* is on. The folder is private (0700) and the files are 0600. Deleting a chat
+  in the Logs tab deletes its file.
+
+### Drawer tags
+
+Any `#word` in a label becomes a tag: `/save https://… ref sheet #ref #nsfw`. In the Drawer
+tab, `t` edits tags and `[` / `]` (or `Tab`) step through tag filters. Searching with `/`
+accepts `#tag` terms too.
 
 ### Importing from the website
 
@@ -113,8 +132,9 @@ their first frame.
 - The website sends "typing" on every keystroke and never turns it off. yap sends it once,
   then clears it when the box is emptied or after 5 idle seconds.
 - The website sends `find_partner` *before* asking "find a new partner?". yap asks first.
-- "Any / All" can't be combined with specific picks. The server treats `any` as a
-  wildcard, so a combination would mean the same as Any on its own.
+- Like the website, "Any / All" can be combined with specific picks. For kinks that means
+  "match anyone, but show my partner what I'm into". Unticking everything falls back to
+  Any, because the server rejects empty lists.
 - The protocol can't cancel a search. `Ctrl-D` while searching reconnects, which removes
   you from the queue.
 - On a dropped connection, yap reconnects with backoff (1 s up to 30 s) instead of asking

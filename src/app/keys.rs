@@ -130,8 +130,15 @@ impl App {
                 step(&mut self.traffic_ui.list.selected, len, delta.signum());
             }
             Tab::Drawer => {
-                let len = self.drawer.filtered(&self.drawer_ui.filter).len();
-                step(&mut self.drawer_ui.selected, len, delta.signum());
+                let len = self.drawer_items().len();
+                step(&mut self.drawer_ui.list.selected, len, delta.signum());
+            }
+            Tab::Logs if self.logs_ui.reading => {
+                self.logs_ui.scroll = self.logs_ui.scroll.saturating_add_signed(delta);
+            }
+            Tab::Logs => {
+                let len = self.visible_logs().len();
+                step(&mut self.logs_ui.list.selected, len, delta.signum());
             }
             Tab::Settings => {
                 let len = settings::rows(&self.config.settings).len();
@@ -163,6 +170,7 @@ impl App {
             Tab::Chat => self.chat_key(key),
             Tab::Preferences => self.prefs_key(key),
             Tab::Drawer => self.drawer_key(key),
+            Tab::Logs => self.logs_key(key),
             Tab::Traffic => self.traffic_key(key),
             Tab::Settings => self.settings_key(key),
         }
@@ -179,8 +187,8 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let tab = match key.code {
-            KeyCode::F(n @ 2..=6) => Some(Tab::ALL[n as usize - 2]),
-            KeyCode::Char(c @ '1'..='5') if alt => Some(Tab::ALL[c as usize - '1' as usize]),
+            KeyCode::F(n @ 2..=7) => Some(Tab::ALL[n as usize - 2]),
+            KeyCode::Char(c @ '1'..='6') if alt => Some(Tab::ALL[c as usize - '1' as usize]),
             _ => None,
         };
         if let Some(tab) = tab {
@@ -248,11 +256,11 @@ impl App {
     }
 
     fn chat_drawer_key(&mut self, key: KeyEvent) {
-        let items = self.drawer.filtered("");
-        if navigate(&mut self.drawer_ui.selected, items.len(), &key, 5) {
+        let items = self.drawer.filtered("", None);
+        if navigate(&mut self.drawer_ui.list.selected, items.len(), &key, 5) {
             return;
         }
-        let selected = items.get(self.drawer_ui.selected).map(|&i| self.drawer.items[i].url.clone());
+        let selected = items.get(self.drawer_ui.list.selected).map(|&i| self.drawer.items[i].url.clone());
         match (key.code, selected) {
             (KeyCode::Enter | KeyCode::Char('i'), Some(url)) => self.insert_into_input(&url),
             (KeyCode::Char('o'), Some(url)) => self.open_url(&url),
@@ -407,32 +415,55 @@ impl App {
 
     // ----- drawer ---------------------------------------------------------------
 
-    /// The drawer item index under the selection, respecting the filter.
+    /// Drawer items shown in the Drawer tab, after the text filter and tag filter.
+    pub fn drawer_items(&self) -> Vec<usize> {
+        self.drawer.filtered(&self.drawer_ui.list.filter, self.drawer_ui.tag.as_deref())
+    }
+
+    /// The drawer item index under the selection, respecting the filters.
     pub fn selected_drawer_item(&self) -> Option<usize> {
-        self.drawer.filtered(&self.drawer_ui.filter).get(self.drawer_ui.selected).copied()
+        self.drawer_items().get(self.drawer_ui.list.selected).copied()
+    }
+
+    /// Step the tag filter through: all → each tag → all.
+    fn cycle_drawer_tag(&mut self, delta: isize) {
+        let tags: Vec<String> = self.drawer.tags().into_iter().map(|(t, _)| t).collect();
+        let current = self.drawer_ui.tag.as_ref().and_then(|t| tags.iter().position(|x| x == t));
+        // Position 0 is "all", tags follow.
+        let len = tags.len() as isize + 1;
+        let pos = current.map_or(0, |i| i as isize + 1);
+        let next = (pos + delta).rem_euclid(len);
+        self.drawer_ui.tag = (next > 0).then(|| tags[next as usize - 1].clone());
+        self.drawer_ui.list.selected = 0;
     }
 
     fn drawer_key(&mut self, key: KeyEvent) {
-        if self.drawer_ui.filtering {
-            if edit_filter(&mut self.drawer_ui, &key) {
-                self.drawer_ui.filtering = false;
+        if self.drawer_ui.list.filtering {
+            if edit_filter(&mut self.drawer_ui.list, &key) {
+                self.drawer_ui.list.filtering = false;
             }
             return;
         }
-        let len = self.drawer.filtered(&self.drawer_ui.filter).len();
-        if navigate(&mut self.drawer_ui.selected, len, &key, 10) {
+        let len = self.drawer_items().len();
+        if navigate(&mut self.drawer_ui.list.selected, len, &key, 10) {
             return;
         }
-        if key.code == KeyCode::Char('a') {
-            return self.open_prompt("Link to save", "https://", PromptAction::DrawerAddUrl);
-        }
-        if key.code == KeyCode::Char('/') {
-            self.drawer_ui.filtering = true;
-            return;
-        }
-        if key.code == KeyCode::Esc {
-            self.drawer_ui.filter.clear();
-            return;
+        match key.code {
+            KeyCode::Char('a') => {
+                return self.open_prompt("Link to save", "https://", PromptAction::DrawerAddUrl);
+            }
+            KeyCode::Char('/') => {
+                self.drawer_ui.list.filtering = true;
+                return;
+            }
+            KeyCode::Char(']') | KeyCode::Tab => return self.cycle_drawer_tag(1),
+            KeyCode::Char('[') | KeyCode::BackTab => return self.cycle_drawer_tag(-1),
+            KeyCode::Esc => {
+                self.drawer_ui.list.filter.clear();
+                self.drawer_ui.tag = None;
+                return;
+            }
+            _ => {}
         }
         let Some(index) = self.selected_drawer_item() else { return };
         let item = self.drawer.items[index].clone();
@@ -445,15 +476,79 @@ impl App {
                 self.open_prompt("Label", &item.label, PromptAction::DrawerEditLabel(index));
             }
             KeyCode::Char('n') => self.open_prompt("Note", &item.note, PromptAction::DrawerEditNote(index)),
+            KeyCode::Char('t') => {
+                let tags = item.tags.join(" ");
+                self.open_prompt("Tags (space or comma separated)", &tags, PromptAction::DrawerEditTags(index));
+            }
             KeyCode::Char('d') | KeyCode::Delete => {
                 self.modal = Some(Modal::Confirm {
                     text: format!("Remove `{}` from the drawer?", item.label),
                     action: Confirm::DeleteDrawerItem(index),
                 });
             }
-            KeyCode::Char(c @ ('J' | 'K')) if self.drawer_ui.filter.is_empty() => {
-                self.drawer_ui.selected = self.drawer.shift(index, if c == 'J' { 1 } else { -1 });
+            KeyCode::Char(c @ ('J' | 'K')) if self.drawer_ui.list.filter.is_empty() && self.drawer_ui.tag.is_none() => {
+                self.drawer_ui.list.selected = self.drawer.shift(index, if c == 'J' { 1 } else { -1 });
                 self.drawer_changed();
+            }
+            _ => {}
+        }
+    }
+
+    // ----- logs -----------------------------------------------------------------
+
+    fn logs_key(&mut self, key: KeyEvent) {
+        if self.logs_ui.list.filtering {
+            if edit_filter(&mut self.logs_ui.list, &key) {
+                self.logs_ui.list.filtering = false;
+            }
+            return;
+        }
+        if self.logs_ui.reading {
+            let page = 10;
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => self.logs_ui.scroll = self.logs_ui.scroll.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => self.logs_ui.scroll += 1,
+                KeyCode::PageUp => self.logs_ui.scroll = self.logs_ui.scroll.saturating_sub(page),
+                KeyCode::PageDown | KeyCode::Char(' ') => self.logs_ui.scroll += page,
+                KeyCode::Home | KeyCode::Char('g') => self.logs_ui.scroll = 0,
+                KeyCode::End | KeyCode::Char('G') => self.logs_ui.scroll = usize::MAX,
+                KeyCode::Esc | KeyCode::Left | KeyCode::Char('h' | 'q') => self.logs_ui.reading = false,
+                _ => {}
+            }
+            return;
+        }
+        let len = self.visible_logs().len();
+        let before = self.logs_ui.list.selected;
+        if navigate(&mut self.logs_ui.list.selected, len, &key, 10) {
+            if self.logs_ui.list.selected != before {
+                self.logs_ui.scroll = 0;
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Char('/') => self.logs_ui.list.filtering = true,
+            KeyCode::Esc => self.logs_ui.list.filter.clear(),
+            _ => {}
+        }
+        let Some(index) = self.selected_log() else { return };
+        match key.code {
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                if let Err(e) = self.logs.open(index) {
+                    return self.toast(Level::Error, format!("Couldn't open chat: {e:#}"));
+                }
+                self.logs_ui.reading = true;
+            }
+            KeyCode::Char('e') => {
+                let started = self.logs.items[index].started.format("%Y%m%d-%H%M%S");
+                let path = self.default_path(&format!("yap-chat-{started}.txt"));
+                self.open_prompt("Save transcript to", &path, PromptAction::ExportLog(index));
+            }
+            KeyCode::Char('d') | KeyCode::Delete => {
+                let title = self.logs.items[index].title();
+                self.modal = Some(Modal::Confirm {
+                    text: format!("Delete the chat with {title}? This removes its log file too."),
+                    action: Confirm::DeleteLog(index),
+                });
             }
             _ => {}
         }
@@ -695,8 +790,16 @@ impl App {
             },
             PromptAction::DrawerAddLabel { url } => self.add_to_drawer(&url, &text),
             PromptAction::DrawerEditLabel(i) => {
-                if let Some(item) = self.drawer.items.get_mut(i).filter(|_| !text.is_empty()) {
-                    item.label = text;
+                let (label, tags) = crate::drawer::split_label_tags(&text);
+                if let Some(item) = self.drawer.items.get_mut(i) {
+                    if !label.is_empty() {
+                        item.label = label;
+                    }
+                    for tag in tags {
+                        if !item.tags.contains(&tag) {
+                            item.tags.push(tag);
+                        }
+                    }
                     self.drawer_changed();
                 }
             }
@@ -706,6 +809,13 @@ impl App {
                     self.drawer_changed();
                 }
             }
+            PromptAction::DrawerEditTags(i) => {
+                if let Some(item) = self.drawer.items.get_mut(i) {
+                    item.tags = crate::drawer::parse_tags(&text);
+                    self.drawer_changed();
+                }
+            }
+            PromptAction::ExportLog(i) => self.export_log(i, &text),
             PromptAction::AddTrustedDomain => self.trust_domain(&text),
             PromptAction::ServerUrl => match crate::net::websocket_url(&text) {
                 Ok(url) => {

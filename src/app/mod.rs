@@ -18,6 +18,7 @@ use crate::drawer::Drawer;
 use crate::images::{ImageState, Loaded, Viewer};
 use crate::input::LineEditor;
 use crate::links::{Trust, check_trust, find_links, looks_like_image, normalize_domain};
+use crate::logs::Logs;
 use crate::net::NetEvent;
 use crate::prefs::{Field, Invalid};
 use crate::protocol::{ClientMessage, PartnerInfo, ServerMessage};
@@ -42,18 +43,20 @@ pub enum Tab {
     Chat,
     Preferences,
     Drawer,
+    Logs,
     Traffic,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [Tab::Chat, Tab::Preferences, Tab::Drawer, Tab::Traffic, Tab::Settings];
+    pub const ALL: [Tab; 6] = [Tab::Chat, Tab::Preferences, Tab::Drawer, Tab::Logs, Tab::Traffic, Tab::Settings];
 
     pub fn title(self) -> &'static str {
         match self {
             Tab::Chat => "Chat",
             Tab::Preferences => "Preferences",
             Tab::Drawer => "Drawer",
+            Tab::Logs => "Logs",
             Tab::Traffic => "Traffic",
             Tab::Settings => "Settings",
         }
@@ -153,6 +156,22 @@ pub struct TrafficUi {
     pub pretty: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct LogsUi {
+    pub list: ListUi,
+    /// Keys scroll the transcript rather than the list.
+    pub reading: bool,
+    /// Top line of the transcript view.
+    pub scroll: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DrawerUi {
+    pub list: ListUi,
+    /// Only show items with this tag.
+    pub tag: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatFocus {
     Input,
@@ -185,7 +204,11 @@ pub struct App {
     pub viewer: Option<Viewer>,
     pub toasts: Vec<Toast>,
     pub prefs_ui: PrefsUi,
-    pub drawer_ui: ListUi,
+    pub drawer_ui: DrawerUi,
+    pub logs: Logs,
+    pub logs_ui: LogsUi,
+    /// A resizable copy of the drawer's selected image, for its preview pane.
+    pub drawer_preview: Option<(String, ratatui_image::protocol::StatefulProtocol)>,
     pub traffic: TrafficLog,
     pub traffic_ui: TrafficUi,
     pub settings_ui: ListUi,
@@ -204,7 +227,8 @@ pub struct App {
 
 impl App {
     pub fn new(paths: Paths, config: Config, drawer: Drawer, themes: Vec<Theme>, picker: Picker) -> Self {
-        let theme = pick_theme(&themes, &config.settings.theme);
+        let theme =
+            effective_theme(pick_theme(&themes, &config.settings.theme), config.settings.transparent_background);
         let traffic = TrafficLog::new(config.settings.traffic.capacity);
         let profile = config.profiles.iter().position(|p| p.name == config.active_profile).unwrap_or(0);
         App {
@@ -230,7 +254,10 @@ impl App {
             viewer: None,
             toasts: Vec::new(),
             prefs_ui: PrefsUi { pane: PrefsPane::Fields, profile, field: 0, option: 0, filter: String::new() },
-            drawer_ui: ListUi::default(),
+            drawer_ui: DrawerUi::default(),
+            logs: Logs::default(),
+            logs_ui: LogsUi::default(),
+            drawer_preview: None,
             traffic,
             traffic_ui: TrafficUi { list: ListUi::default(), follow: true, pretty: true },
             settings_ui: ListUi::default(),
@@ -267,8 +294,20 @@ impl App {
         }
     }
 
+    /// Add a line to the chat view and to the live conversation's log.
+    fn push(&mut self, kind: EntryKind) {
+        let at = Local::now();
+        self.chat.push(at, kind.clone());
+        self.logs.record(chat::Entry { at, kind });
+    }
+
     fn system(&mut self, text: impl Into<String>) {
-        self.chat.push(Local::now(), EntryKind::System(text.into()));
+        self.push(EntryKind::System(text.into()));
+    }
+
+    /// The current partner is gone: close their conversation in the logs.
+    fn end_conversation(&mut self) {
+        self.logs.end(Local::now());
     }
 
     pub fn config_changed(&mut self) {
@@ -290,6 +329,14 @@ impl App {
             && let Err(e) = self.drawer.save(&self.paths.drawer_file)
         {
             self.toast(Level::Error, format!("couldn't save drawer: {e:#}"));
+        }
+        if self.config.settings.save_logs
+            && let Err(e) = self.logs.save(&self.paths.logs_dir)
+        {
+            // Turn it off rather than retrying (and toasting) on every frame.
+            self.config.settings.save_logs = false;
+            self.config_changed();
+            self.toast(Level::Error, format!("Chat logging turned off: {e:#}"));
         }
     }
 
@@ -351,28 +398,32 @@ impl App {
             NetEvent::Message(msg) => self.on_server(msg),
             NetEvent::Unparsed { raw, error } => {
                 let preview = crate::text::truncate(&crate::text::sanitize(&raw), 80);
-                self.chat.push(
-                    Local::now(),
-                    EntryKind::Warning(format!("Couldn't read a server frame ({error}): {preview}")),
-                );
+                self.push(EntryKind::Warning(format!("Couldn't read a server frame ({error}): {preview}")));
             }
             NetEvent::Closed { reason } => self.on_closed(reason),
         }
     }
 
     fn on_closed(&mut self, reason: String) {
-        let was_partnered = self.has_partner() || self.partner == PartnerState::Searching;
+        let had_partner = self.has_partner();
+        let was_partnered = had_partner || self.partner == PartnerState::Searching;
         self.reset_partner();
         self.can_block_previous = false;
         self.users_online = None;
         if std::mem::take(&mut self.closing) {
+            if had_partner {
+                self.end_conversation();
+            }
             self.status = ConnStatus::Offline { reason, retry_at: None };
             return;
         }
         let retry_at = self.config.settings.auto_reconnect.then(|| self.now + self.backoff());
         if was_partnered || !matches!(self.status, ConnStatus::Offline { .. }) {
             let hint = if retry_at.is_some() { "Reconnecting…" } else { "Press Ctrl-R to reconnect." };
-            self.chat.push(Local::now(), EntryKind::Warning(format!("Disconnected from the server: {reason}. {hint}")));
+            self.push(EntryKind::Warning(format!("Disconnected from the server: {reason}. {hint}")));
+        }
+        if had_partner {
+            self.end_conversation();
         }
         self.status = ConnStatus::Offline { reason, retry_at };
     }
@@ -394,7 +445,7 @@ impl App {
                 let text = crate::text::sanitize(&text);
                 self.chat.partner_typing = false;
                 self.request_images(&text);
-                self.chat.push(Local::now(), EntryKind::Partner(text));
+                self.push(EntryKind::Partner(text));
                 if self.config.settings.notify.on_message {
                     self.alert("New Message");
                 }
@@ -414,19 +465,25 @@ impl App {
                 self.reset_partner();
                 self.can_block_previous = true;
                 self.system("Your yiffing partner has left.");
+                self.end_conversation();
                 self.alert("Partner Left");
             }
             ServerMessage::PartnerDisconnected => {
                 self.reset_partner();
                 self.can_block_previous = false;
                 self.system("Your yiffing partner has disconnected unexpectedly.");
+                self.end_conversation();
                 self.alert("Partner Disconnected");
             }
             ServerMessage::PartnerBlocked => {
                 if self.has_partner() {
                     self.system("Your partner has been blocked and disconnected from you.");
+                    self.end_conversation();
                 } else {
-                    self.system("Your previous partner has been blocked.");
+                    let kind = EntryKind::System("Your previous partner has been blocked.".into());
+                    let at = Local::now();
+                    self.chat.push(at, kind.clone());
+                    self.logs.record_after(chat::Entry { at, kind });
                 }
                 self.reset_partner();
                 self.can_block_previous = false;
@@ -435,6 +492,7 @@ impl App {
                 self.reset_partner();
                 self.can_block_previous = true;
                 self.system("You have disconnected from your partner.");
+                self.end_conversation();
             }
             ServerMessage::InvalidPreferences => {
                 if self.partner == PartnerState::Searching {
@@ -446,12 +504,9 @@ impl App {
                 );
             }
             ServerMessage::Unknown { kind, .. } => {
-                self.chat.push(
-                    Local::now(),
-                    EntryKind::Warning(format!(
-                        "The server sent an unrecognised `{kind}` message (see the Traffic tab)."
-                    )),
-                );
+                self.push(EntryKind::Warning(format!(
+                    "The server sent an unrecognised `{kind}` message (see the Traffic tab)."
+                )));
             }
         }
     }
@@ -472,11 +527,15 @@ impl App {
             .map(str::to_owned)
             .collect();
         self.reset_partner();
+        if self.config.settings.split_chats {
+            self.chat.clear();
+        }
+        self.logs.start(Local::now(), info.clone());
         self.system("You have been connected with a yiffing partner.");
         if let Some(lang) = &info.language {
             self.system(format!("Your partner's language is {lang}"));
         }
-        self.chat.push(Local::now(), EntryKind::PartnerInfo { info: info.clone(), common });
+        self.push(EntryKind::PartnerInfo { info: info.clone(), common });
         self.partner = PartnerState::Connected(info);
         self.can_block_previous = false;
         self.tab = Tab::Chat;
@@ -552,6 +611,14 @@ impl App {
                     self.toast(Level::Info, format!("Removed `{}` from the drawer.", item.label));
                 }
             }
+            Confirm::DeleteLog(index) => match self.logs.delete(index) {
+                Ok(conv) => {
+                    self.logs_ui.reading = false;
+                    self.logs_ui.list.selected = self.logs_ui.list.selected.saturating_sub(1);
+                    self.toast(Level::Info, format!("Deleted chat with {}.", conv.title()));
+                }
+                Err(e) => self.toast(Level::Error, format!("{e:#}")),
+            },
             Confirm::LoadUntrusted(url) => {
                 let host = url::Url::parse(&url).ok().and_then(|u| u.host_str().map(str::to_owned));
                 self.open_viewer(&url, host);
@@ -594,6 +661,7 @@ impl App {
         }
         if had_partner {
             self.system("You have disconnected from your previous partner.");
+            self.end_conversation();
         }
         self.reset_partner();
         self.can_block_previous = had_partner;
@@ -662,7 +730,7 @@ impl App {
         self.effect(Effect::Send(ClientMessage::SendMessage(text.clone())));
         self.input.submit();
         self.request_images(&text);
-        self.chat.push(Local::now(), EntryKind::You(text));
+        self.push(EntryKind::You(text));
         self.chat.follow();
     }
 
@@ -714,6 +782,7 @@ impl App {
                 self.connect();
             }
             Command::Clear => self.chat.clear(),
+            Command::Logs => self.tab = Tab::Logs,
             Command::Help => self.modal = Some(Modal::Help { scroll: 0 }),
             Command::Quit => self.request_quit(),
             Command::Links => self.open_links(),
@@ -767,11 +836,17 @@ impl App {
         self.modal = Some(Modal::Themes { selected, original: self.theme.name.clone() });
     }
 
+    /// Re-derive the displayed theme after a display setting (e.g. transparency) changes.
+    pub fn refresh_theme(&mut self) {
+        let name = self.theme.name.clone();
+        self.theme = effective_theme(pick_theme(&self.themes, &name), self.config.settings.transparent_background);
+    }
+
     /// Switch theme; `persist` is false while previewing in the picker.
     pub fn set_theme(&mut self, name: &str, persist: bool) {
         match self.themes.iter().find(|t| t.name == name) {
             Some(t) => {
-                self.theme = t.clone();
+                self.theme = effective_theme(t.clone(), self.config.settings.transparent_background);
                 if persist {
                     self.config.settings.theme = name.to_owned();
                     self.config_changed();
@@ -805,7 +880,8 @@ impl App {
                 self.config_changed();
                 if report.settings_applied {
                     let theme = self.config.settings.theme.clone();
-                    self.theme = pick_theme(&self.themes, &theme);
+                    self.theme =
+                        effective_theme(pick_theme(&self.themes, &theme), self.config.settings.transparent_background);
                     self.traffic.set_capacity(self.config.settings.traffic.capacity);
                 }
                 let mut msg = match report.profiles.len() {
@@ -821,6 +897,29 @@ impl App {
                 }
             }
             Err(e) => self.toast(Level::Error, format!("Import failed: {e:#}")),
+        }
+    }
+
+    /// Indices into `logs.items` shown in the Logs tab: newest first, filtered.
+    pub fn visible_logs(&self) -> Vec<usize> {
+        let filter = &self.logs_ui.list.filter;
+        (0..self.logs.items.len()).rev().filter(|&i| self.logs.items[i].matches(filter)).collect()
+    }
+
+    pub fn selected_log(&self) -> Option<usize> {
+        self.visible_logs().get(self.logs_ui.list.selected).copied()
+    }
+
+    pub fn export_log(&mut self, index: usize, path: &str) {
+        let path = config::expand_tilde(path);
+        let result = (|| -> anyhow::Result<()> {
+            self.logs.open(index)?;
+            let text = self.logs.items[index].transcript().ok_or_else(|| anyhow::anyhow!("chat isn't loaded"))?;
+            config::write_atomic(&path, &text)
+        })();
+        match result {
+            Ok(()) => self.toast(Level::Success, format!("Saved transcript to {}", path.display())),
+            Err(e) => self.toast(Level::Error, format!("Couldn't save transcript: {e:#}")),
         }
     }
 
@@ -861,7 +960,8 @@ impl App {
         match self.drawer.add(url, label, chrono::Utc::now()) {
             Ok(i) => {
                 let label = self.drawer.items[i].label.clone();
-                self.drawer_ui.selected = i;
+                self.drawer_ui.list.selected = 0;
+                self.drawer_ui.tag = None;
                 self.drawer_changed();
                 self.toast(Level::Success, format!("Saved `{label}` to the drawer."));
             }
@@ -1030,6 +1130,14 @@ impl App {
         self.modal =
             Some(Modal::Prompt(Prompt { title: title.into(), editor: LineEditor::with_text(initial), action }));
     }
+}
+
+/// Apply display-only tweaks (transparency) to a theme.
+fn effective_theme(mut theme: Theme, transparent: bool) -> Theme {
+    if transparent {
+        theme.bg = ratatui::style::Color::Reset;
+    }
+    theme
 }
 
 fn pick_theme(themes: &[Theme], name: &str) -> Theme {

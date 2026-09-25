@@ -12,6 +12,7 @@ pub enum Confirm {
     Quit,
     DeleteProfile(String),
     DeleteDrawerItem(usize),
+    DeleteLog(usize),
     LoadUntrusted(String),
 }
 
@@ -28,6 +29,8 @@ pub enum PromptAction {
     DrawerAddLabel { url: String },
     DrawerEditLabel(usize),
     DrawerEditNote(usize),
+    DrawerEditTags(usize),
+    ExportLog(usize),
     AddTrustedDomain,
     ServerUrl,
     RawFrame,

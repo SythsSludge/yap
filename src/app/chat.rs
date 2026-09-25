@@ -3,8 +3,10 @@
 use crate::links::find_links;
 use crate::protocol::PartnerInfo;
 use chrono::{DateTime, Local};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EntryKind {
     You(String),
     Partner(String),
@@ -19,7 +21,7 @@ pub enum EntryKind {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub at: DateTime<Local>,
     pub kind: EntryKind,
@@ -31,6 +33,17 @@ impl Entry {
         match &self.kind {
             EntryKind::You(t) | EntryKind::Partner(t) => Some(t),
             _ => None,
+        }
+    }
+
+    /// `[2026-09-25 14:03:12] You: hi` for plain-text transcripts.
+    pub fn transcript_line(&self) -> String {
+        let time = self.at.format("%Y-%m-%d %H:%M:%S");
+        match &self.kind {
+            EntryKind::You(t) => format!("[{time}] You: {t}"),
+            EntryKind::Partner(t) => format!("[{time}] Partner: {t}"),
+            EntryKind::System(t) | EntryKind::Warning(t) => format!("[{time}] * {t}"),
+            EntryKind::PartnerInfo { info, .. } => format!("[{time}] * {}", partner_summary(info)),
         }
     }
 }
@@ -129,14 +142,7 @@ impl Chat {
     pub fn transcript(&self) -> String {
         let mut out = String::new();
         for e in &self.entries {
-            let time = e.at.format("%Y-%m-%d %H:%M:%S");
-            let line = match &e.kind {
-                EntryKind::You(t) => format!("[{time}] You: {t}"),
-                EntryKind::Partner(t) => format!("[{time}] Partner: {t}"),
-                EntryKind::System(t) | EntryKind::Warning(t) => format!("[{time}] * {t}"),
-                EntryKind::PartnerInfo { info, .. } => format!("[{time}] * {}", partner_summary(info)),
-            };
-            out.push_str(&line);
+            out.push_str(&e.transcript_line());
             out.push('\n');
         }
         out

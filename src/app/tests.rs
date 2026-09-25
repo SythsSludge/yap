@@ -142,7 +142,7 @@ fn full_partner_lifecycle_matches_web_client() {
     let sent = h.sent();
     let wire = find_payload(&sent).expect("find_partner sent");
     assert_eq!(wire.user.species, "Wolf");
-    assert_eq!(wire.kinks, vec!["Biting", "Musk"]);
+    assert_eq!(wire.kinks, vec!["any", "Biting", "Musk"], "any/all combines with picks");
     assert_eq!(h.partner, PartnerState::Searching);
 
     h.server(ServerMessage::PartnerPending);
@@ -515,6 +515,10 @@ fn preference_editing_with_keys() {
     h.press(KeyCode::Char(' '));
     h.press(KeyCode::Down);
     h.press(KeyCode::Char(' '));
+    assert_eq!(h.config.active().preferences.kinks, vec!["any", "3+ Penetration", "Age Differences"]);
+    // Any / All is just another option in the list and can be switched off.
+    h.press(KeyCode::Home);
+    h.press(KeyCode::Char(' '));
     assert_eq!(h.config.active().preferences.kinks, vec!["3+ Penetration", "Age Differences"]);
     assert_eq!(h.prefs_ui.pane, PrefsPane::Options);
     h.press(KeyCode::Esc);
@@ -640,7 +644,7 @@ fn traffic_is_recorded_and_navigable() {
             body: (*body).into(),
         }));
     }
-    h.press(KeyCode::F(5));
+    h.press(KeyCode::F(6));
     assert_eq!(h.traffic_len(), 2, "heartbeat hidden by default");
     assert_eq!(h.traffic_selected(), Some(1));
     h.press(KeyCode::Up);
@@ -670,7 +674,7 @@ fn raw_frames_need_a_connection() {
 #[test]
 fn settings_rows_toggle_and_persist() {
     let mut h = harness();
-    h.press(KeyCode::F(6));
+    h.press(KeyCode::F(7));
     let rows = settings::rows(&h.config.settings);
     h.settings_ui.selected = rows.iter().position(|r| *r == settings::Row::Timestamps).unwrap();
     h.press(KeyCode::Enter);
@@ -700,4 +704,119 @@ fn server_url_prompt_validates_and_reconnects() {
     h.type_str("gopher://x");
     h.press(KeyCode::Enter);
     assert!(h.last_toast().unwrap().contains("unsupported scheme"));
+}
+
+#[test]
+fn each_partner_gets_their_own_log() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.server(ServerMessage::ReceiveMessage("first chat".into()));
+    h.server(ServerMessage::PartnerLeft);
+    h.server(ServerMessage::PartnerPending);
+    let mut h = h.partnered();
+    h.server(ServerMessage::ReceiveMessage("second chat".into()));
+
+    assert_eq!(h.logs.items.len(), 2);
+    let first = h.logs.items[0].loaded_entries().unwrap();
+    assert!(first.iter().any(|e| e.kind == EntryKind::Partner("first chat".into())));
+    assert!(first.iter().any(|e| e.kind == EntryKind::System("Your yiffing partner has left.".into())));
+    assert!(
+        !first.iter().any(|e| matches!(&e.kind, EntryKind::System(t) if t.starts_with("We are looking"))),
+        "search noise isn't logged"
+    );
+    assert!(!h.logs.items[0].is_live());
+    assert!(h.logs.items[1].is_live());
+    // The continuous view still shows everything.
+    assert!(h.chat.entries.iter().any(|e| e.kind == EntryKind::Partner("first chat".into())));
+}
+
+#[test]
+fn split_view_starts_fresh_for_each_partner() {
+    let mut h = harness().online().with_prefs();
+    h.config.settings.split_chats = true;
+    let mut h = h.partnered();
+    h.server(ServerMessage::ReceiveMessage("old".into()));
+    h.server(ServerMessage::PartnerLeft);
+    let h = h.partnered();
+    assert!(!h.chat.entries.iter().any(|e| e.kind == EntryKind::Partner("old".into())));
+    assert!(matches!(h.chat.entries[0].kind, EntryKind::System(ref t) if t.starts_with("You have been connected")));
+    assert_eq!(h.logs.items.len(), 2, "the old chat is still in the logs");
+}
+
+#[test]
+fn logs_only_hit_disk_when_enabled() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.server(ServerMessage::ReceiveMessage("secret".into()));
+    h.flush();
+    assert!(!h.paths.logs_dir.exists(), "logging is off by default");
+
+    h.press(KeyCode::F(7));
+    let rows = settings::rows(&h.config.settings);
+    h.settings_ui.selected = rows.iter().position(|r| *r == settings::Row::SaveLogs).unwrap();
+    h.press(KeyCode::Enter);
+    h.flush();
+    let files: Vec<_> = std::fs::read_dir(&h.paths.logs_dir).unwrap().collect();
+    assert_eq!(files.len(), 1);
+    let (mut loaded, _) = crate::logs::Logs::load_dir(&h.paths.logs_dir);
+    assert!(loaded.open(0).unwrap().iter().any(|e| e.kind == EntryKind::Partner("secret".into())));
+}
+
+#[test]
+fn logs_tab_opens_exports_and_deletes() {
+    let mut h = harness().online().with_prefs().partnered();
+    h.server(ServerMessage::ReceiveMessage("hello".into()));
+    h.server(ServerMessage::PartnerLeft);
+    h.press(KeyCode::F(5));
+    assert_eq!(h.tab, Tab::Logs);
+    h.press(KeyCode::Enter);
+    assert!(h.logs_ui.reading);
+    h.press(KeyCode::Esc);
+    let path = h._dir.path().join("chat.txt");
+    h.press(KeyCode::Char('e'));
+    h.ctrl('u');
+    h.type_str(&path.display().to_string());
+    h.press(KeyCode::Enter);
+    assert!(std::fs::read_to_string(&path).unwrap().contains("Partner: hello"));
+    h.press(KeyCode::Char('d'));
+    h.press(KeyCode::Char('y'));
+    assert!(h.logs.items.is_empty());
+}
+
+#[test]
+fn drawer_tags_edit_and_filter() {
+    let mut h = harness();
+    h.run_command(Command::Save { url: "https://a.com/".into(), label: "alpha #ref".into() });
+    h.run_command(Command::Save { url: "https://b.com/".into(), label: "beta".into() });
+    h.press(KeyCode::F(4));
+    h.press(KeyCode::Char('t'));
+    h.type_str("outfits, ref");
+    h.press(KeyCode::Enter);
+    assert_eq!(h.drawer.items[0].tags, vec!["outfits", "ref"]);
+
+    h.press(KeyCode::Char(']'));
+    assert_eq!(h.drawer_ui.tag.as_deref(), Some("outfits"));
+    assert_eq!(h.drawer_items(), vec![0]);
+    h.press(KeyCode::Char(']'));
+    assert_eq!(h.drawer_ui.tag.as_deref(), Some("ref"));
+    assert_eq!(h.drawer_items().len(), 2);
+    h.press(KeyCode::Char(']'));
+    assert_eq!(h.drawer_ui.tag, None, "wraps back to all");
+    h.press(KeyCode::Char('['));
+    assert_eq!(h.drawer_ui.tag.as_deref(), Some("ref"));
+    h.press(KeyCode::Esc);
+    assert_eq!(h.drawer_ui.tag, None);
+}
+
+#[test]
+fn transparent_background_survives_theme_changes() {
+    let mut h = harness();
+    h.press(KeyCode::F(7));
+    let rows = settings::rows(&h.config.settings);
+    h.settings_ui.selected = rows.iter().position(|r| *r == settings::Row::Transparent).unwrap();
+    h.press(KeyCode::Enter);
+    assert_eq!(h.theme.bg, ratatui::style::Color::Reset);
+    h.set_theme("nord", true);
+    assert_eq!(h.theme.bg, ratatui::style::Color::Reset);
+    assert_ne!(h.theme.surface, ratatui::style::Color::Reset, "popups keep their own background");
+    h.press(KeyCode::Enter);
+    assert_ne!(h.theme.bg, ratatui::style::Color::Reset);
 }

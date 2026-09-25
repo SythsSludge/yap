@@ -7,9 +7,12 @@ use crate::config::Settings;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     Theme,
+    Transparent,
     ChatStyle,
     Timestamps,
     Sidebar,
+    SplitChats,
+    SaveLogs,
     ConfirmActions,
     ServerUrl,
     AutoReconnect,
@@ -36,7 +39,8 @@ impl Row {
     pub fn section(self) -> &'static str {
         use Row::*;
         match self {
-            Theme | ChatStyle | Timestamps | Sidebar | ConfirmActions => "Appearance & behaviour",
+            Theme | Transparent | ChatStyle | Timestamps | Sidebar => "Appearance",
+            SplitChats | SaveLogs | ConfirmActions => "Chats",
             ServerUrl | AutoReconnect | SendLanguage => "Connection",
             Bell | TitleFlash | Desktop | NotifyMessages => "Notifications (while unfocused)",
             Images | ImagesAuto | HttpsOnly | MaxRows | MaxCols => "Image previews",
@@ -50,9 +54,12 @@ impl Row {
         use Row::*;
         match self {
             Theme => "Theme".into(),
+            Transparent => "Transparent background".into(),
             ChatStyle => "Chat layout".into(),
             Timestamps => "Timestamps".into(),
             Sidebar => "Partner sidebar".into(),
+            SplitChats => "Fresh chat view for each partner".into(),
+            SaveLogs => "Save chat logs to disk".into(),
             ConfirmActions => "Confirm leave / block / re-roll".into(),
             ServerUrl => "Server".into(),
             AutoReconnect => "Reconnect automatically".into(),
@@ -71,7 +78,7 @@ impl Row {
             ExportAll => "Export profiles & settings…".into(),
             ImportProfiles => "Import profiles…".into(),
             ImportAll => "Import profiles & settings…".into(),
-            AddDomain => "+ Add domain…".into(),
+            AddDomain => "Add domain…".into(),
             Domain(i) => s.images.trusted_domains.get(i).cloned().unwrap_or_default(),
         }
     }
@@ -81,12 +88,12 @@ impl Row {
         let flag = |b: bool| if b { "on" } else { "off" }.to_owned();
         match self {
             Theme => format!("‹ {} ›", s.theme),
-            ChatStyle => match s.chat_style {
-                crate::config::ChatStyle::Cozy => "‹ cozy ›".into(),
-                crate::config::ChatStyle::Compact => "‹ compact ›".into(),
-            },
+            Transparent => flag(s.transparent_background),
+            ChatStyle => format!("‹ {} ›", s.chat_style.name()),
             Timestamps => flag(s.timestamps),
             Sidebar => flag(s.show_sidebar),
+            SplitChats => flag(s.split_chats),
+            SaveLogs => flag(s.save_logs),
             ConfirmActions => flag(s.confirm_actions),
             ServerUrl => s.server_url.clone(),
             AutoReconnect => flag(s.auto_reconnect),
@@ -110,6 +117,16 @@ impl Row {
     pub fn help(self) -> &'static str {
         use Row::*;
         match self {
+            Transparent => "Leave the background unpainted so a transparent terminal shows through.",
+            ChatStyle => {
+                "cozy: name above each message · compact: one line each · messages: bubbles, yours on the right."
+            }
+            SplitChats => {
+                "Clear the chat view when you're matched with someone new. Earlier chats stay in the Logs tab."
+            }
+            SaveLogs => {
+                "Write every chat to ~/.local/share/yap/logs (private files). Includes this session's chats so far."
+            }
             SendLanguage => "The live site predates the language field. Turn off if it starts rejecting preferences.",
             ServerUrl => "wss:// address of a YiffSpot server. Changing it reconnects.",
             ImagesAuto => "Loading an image tells its host your IP address; only trusted domains are ever auto-loaded.",
@@ -126,9 +143,12 @@ pub fn rows(s: &Settings) -> Vec<Row> {
     use Row::*;
     let mut rows = vec![
         Theme,
+        Transparent,
         ChatStyle,
         Timestamps,
         Sidebar,
+        SplitChats,
+        SaveLogs,
         ConfirmActions,
         ServerUrl,
         AutoReconnect,
@@ -160,9 +180,21 @@ impl App {
         let s = &mut self.config.settings;
         match row {
             Theme => return self.open_theme_picker(),
-            ChatStyle => return self.adjust_setting(row, 1),
+            Transparent => {
+                s.transparent_background ^= true;
+                self.refresh_theme();
+            }
+            ChatStyle | MaxRows | MaxCols | TrafficCapacity => return self.adjust_setting(row, 1),
             Timestamps => s.timestamps ^= true,
             Sidebar => s.show_sidebar ^= true,
+            SplitChats => s.split_chats ^= true,
+            SaveLogs => {
+                s.save_logs ^= true;
+                if s.save_logs {
+                    let dir = self.paths.logs_dir.display().to_string();
+                    self.toast(Level::Info, format!("Chats will be saved to {dir}"));
+                }
+            }
             ConfirmActions => s.confirm_actions ^= true,
             AutoReconnect => s.auto_reconnect ^= true,
             SendLanguage => s.send_language ^= true,
@@ -174,7 +206,6 @@ impl App {
             ImagesAuto => s.images.auto_load ^= true,
             HttpsOnly => s.images.https_only ^= true,
             HideHeartbeat => s.traffic.hide_heartbeat ^= true,
-            MaxRows | MaxCols | TrafficCapacity => return self.adjust_setting(row, 1),
             ServerUrl => {
                 let url = s.server_url.clone();
                 return self.open_prompt("Server URL", &url, PromptAction::ServerUrl);
@@ -214,12 +245,7 @@ impl App {
                 let name = self.themes[(i + delta).rem_euclid(n) as usize].name.clone();
                 return self.set_theme(&name, true);
             }
-            ChatStyle => {
-                s.chat_style = match s.chat_style {
-                    crate::config::ChatStyle::Cozy => crate::config::ChatStyle::Compact,
-                    crate::config::ChatStyle::Compact => crate::config::ChatStyle::Cozy,
-                };
-            }
+            ChatStyle => s.chat_style = if delta < 0 { s.chat_style.prev() } else { s.chat_style.next() },
             MaxRows => s.images.max_rows = (s.images.max_rows as i32 + delta).clamp(2, 60) as u16,
             MaxCols => s.images.max_cols = (s.images.max_cols as i32 + 4 * delta).clamp(8, 200) as u16,
             TrafficCapacity => {
@@ -258,8 +284,10 @@ mod tests {
     }
 
     #[test]
-    fn compact_style_value() {
-        let s = Settings { chat_style: ChatStyle::Compact, ..Settings::default() };
-        assert_eq!(Row::ChatStyle.value(&s), "‹ compact ›");
+    fn chat_style_cycles_both_ways() {
+        let s = Settings { chat_style: ChatStyle::Sms, ..Settings::default() };
+        assert_eq!(Row::ChatStyle.value(&s), "‹ messages ›");
+        assert_eq!(ChatStyle::Cozy.next().next().next(), ChatStyle::Cozy);
+        assert_eq!(ChatStyle::Cozy.prev(), ChatStyle::Sms);
     }
 }

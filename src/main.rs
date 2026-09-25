@@ -112,6 +112,7 @@ fn main() -> Result<()> {
             println!("config  {}", paths.config_file.display());
             println!("themes  {}", paths.themes_dir.display());
             println!("drawer  {}", paths.drawer_file.display());
+            println!("logs    {}", paths.logs_dir.display());
             return Ok(());
         }
         None => {}
@@ -124,6 +125,7 @@ fn main() -> Result<()> {
         net::websocket_url(server).map_err(anyhow::Error::msg)?;
     }
     let drawer = Drawer::load(&paths.drawer_file)?;
+    let (logs, log_warnings) = yap::logs::Logs::load_dir(&paths.logs_dir);
     let (themes, theme_errors) = yap::theme::load_all(Some(&paths.themes_dir));
     if let Some(name) = &cli.theme
         && !themes.iter().any(|t| &t.name == name)
@@ -161,6 +163,7 @@ fn main() -> Result<()> {
             Picker::halfblocks()
         };
         let mut app = App::new(paths, config, drawer, themes, picker);
+        app.logs = logs;
         app.server_override = cli.server;
         if let Some(name) = &cli.theme {
             app.set_theme(name, false);
@@ -168,7 +171,7 @@ fn main() -> Result<()> {
         if let Some(file) = traffic_sink {
             app.traffic = TrafficLog::new(app.config.settings.traffic.capacity).with_sink(Box::new(file));
         }
-        for w in warnings.into_iter().chain(theme_errors) {
+        for w in warnings.into_iter().chain(theme_errors).chain(log_warnings) {
             app.toast(yap::app::Level::Warning, w);
         }
         runtime.block_on(yap::runtime::run(&mut terminal, app))

@@ -14,8 +14,32 @@ pub enum ChatStyle {
     /// Name on its own line above the message, like the website.
     #[default]
     Cozy,
-    /// `12:01 You: message` on one line.
+    /// `12:01 you  message` on one line.
     Compact,
+    /// Messaging-app bubbles: received on the left, sent on the right.
+    Sms,
+}
+
+impl ChatStyle {
+    pub fn next(self) -> Self {
+        match self {
+            ChatStyle::Cozy => ChatStyle::Compact,
+            ChatStyle::Compact => ChatStyle::Sms,
+            ChatStyle::Sms => ChatStyle::Cozy,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        self.next().next()
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ChatStyle::Cozy => "cozy",
+            ChatStyle::Compact => "compact",
+            ChatStyle::Sms => "messages",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -88,6 +112,14 @@ pub struct Settings {
     pub send_language: bool,
     pub timestamps: bool,
     pub chat_style: ChatStyle,
+    /// Don't paint a background, so a transparent terminal shows through.
+    pub transparent_background: bool,
+    /// Start each partner in a fresh chat view instead of one endless scroll. Earlier
+    /// chats stay available in the Logs tab either way.
+    pub split_chats: bool,
+    /// Write each chat to `~/.local/share/yap/logs`. Off by default: these are private
+    /// conversations and shouldn't hit the disk unless you ask.
+    pub save_logs: bool,
     pub show_sidebar: bool,
     pub auto_reconnect: bool,
     /// Ask before leaving, blocking or re-rolling a partner.
@@ -105,6 +137,9 @@ impl Default for Settings {
             send_language: true,
             timestamps: true,
             chat_style: ChatStyle::default(),
+            transparent_background: false,
+            split_chats: false,
+            save_logs: false,
             show_sidebar: true,
             auto_reconnect: true,
             confirm_actions: true,
@@ -418,6 +453,7 @@ pub struct Paths {
     pub config_file: PathBuf,
     pub themes_dir: PathBuf,
     pub drawer_file: PathBuf,
+    pub logs_dir: PathBuf,
     pub data_dir: PathBuf,
 }
 
@@ -430,6 +466,7 @@ impl Paths {
         Ok(Paths {
             themes_dir: dirs.config_dir().join("themes"),
             drawer_file: dirs.data_dir().join("drawer.toml"),
+            logs_dir: dirs.data_dir().join("logs"),
             data_dir: dirs.data_dir().to_owned(),
             config_file,
         })
@@ -441,6 +478,7 @@ impl Paths {
             config_file: dir.join("config.toml"),
             themes_dir: dir.join("themes"),
             drawer_file: dir.join("drawer.toml"),
+            logs_dir: dir.join("logs"),
             data_dir: dir.to_owned(),
         }
     }

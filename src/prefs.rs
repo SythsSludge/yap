@@ -155,8 +155,7 @@ impl Preferences {
     }
 
     /// Choose `value` for `field`. Single fields are replaced; multi fields toggle the
-    /// value. Picking "any" clears concrete picks and vice versa, since the server
-    /// treats `any` as a wildcard that makes other picks meaningless.
+    /// value (see [`toggle_multi`]).
     pub fn toggle(&mut self, field: Field, value: &str) {
         if value == ANY && !field.allows_any() {
             return;
@@ -272,7 +271,7 @@ impl Preferences {
                 }
                 ok
             });
-            if list.is_empty() || (list.len() > 1 && list.iter().any(|x| x == ANY)) {
+            if list.is_empty() {
                 *list = vec![ANY.into()];
             }
         }
@@ -313,22 +312,24 @@ impl Preferences {
             [] => "—".into(),
             [v] if *v == ANY => "Any / All".into(),
             [v] => (*v).into(),
+            [first, rest @ ..] if *first == ANY => format!("Any + {}", rest.len()),
             [first, rest @ ..] => format!("{first} +{}", rest.len()),
         }
     }
 }
 
+/// Flip one value in a multi-select, like the website's select box. "Any / All" can sit
+/// alongside specific picks: for kinks that means "match anyone, but here's what I'm
+/// into", since the partner is shown the whole list. An emptied list falls back to Any,
+/// because the server rejects empty selections.
 fn toggle_multi(list: &mut Vec<String>, value: &str) {
-    if value == ANY {
-        *list = vec![ANY.into()];
-        return;
-    }
-    list.retain(|x| x != ANY);
     if let Some(pos) = list.iter().position(|x| x == value) {
         list.remove(pos);
         if list.is_empty() {
             list.push(ANY.into());
         }
+    } else if value == ANY {
+        list.insert(0, ANY.into());
     } else {
         list.push(value.into());
     }
@@ -374,21 +375,23 @@ mod tests {
     }
 
     #[test]
-    fn multi_toggle_keeps_any_exclusive() {
+    fn multi_toggle_lets_any_combine_with_picks() {
         let mut p = complete();
         p.toggle(Field::Kinks, "Biting");
+        assert_eq!(p.kinks, vec!["any", "Biting"]);
+        p.toggle(Field::Kinks, ANY);
         assert_eq!(p.kinks, vec!["Biting"]);
         p.toggle(Field::Kinks, "Anal");
         assert_eq!(p.kinks, vec!["Biting", "Anal"]);
-        p.toggle(Field::Kinks, "Biting");
-        assert_eq!(p.kinks, vec!["Anal"]);
-        // Removing the last concrete pick falls back to Any rather than an empty list,
-        // which the server would reject.
-        p.toggle(Field::Kinks, "Anal");
-        assert_eq!(p.kinks, vec!["any"]);
-        p.toggle(Field::Kinks, "Anal");
         p.toggle(Field::Kinks, ANY);
+        assert_eq!(p.kinks, vec!["any", "Biting", "Anal"], "any goes first");
+        p.toggle(Field::Kinks, ANY);
+        p.toggle(Field::Kinks, "Biting");
+        p.toggle(Field::Kinks, "Anal");
+        // Emptying the list falls back to Any rather than something the server rejects.
         assert_eq!(p.kinks, vec!["any"]);
+        p.toggle(Field::PartnerSpecies, "Fox");
+        assert_eq!(p.partner_species, vec!["any", "Fox"]);
     }
 
     #[test]
@@ -406,6 +409,7 @@ mod tests {
     fn to_wire_builds_find_partner_payload() {
         let mut p = complete();
         p.toggle(Field::PartnerSpecies, "Fox");
+        p.toggle(Field::PartnerSpecies, crate::catalog::ANY);
         let wire = p.to_wire(true).unwrap();
         assert_eq!(wire.user.gender, "Male");
         assert_eq!(wire.user.language.as_deref(), Some("any"));
@@ -419,14 +423,14 @@ mod tests {
     fn sanitize_drops_unknown_values_and_fixes_invariants() {
         let mut p = Preferences {
             gender: Some("Robot".into()),
-            partner_species: vec!["any".into(), "Fox".into()],
+            partner_species: vec!["Fox".into(), "Fox".into()],
             kinks: vec!["Anal".into(), "Nope".into(), "Anal".into()],
             language: "Klingon".into(),
             ..complete()
         };
         let dropped = p.sanitize();
         assert_eq!(p.gender, None);
-        assert_eq!(p.partner_species, vec!["any"]);
+        assert_eq!(p.partner_species, vec!["Fox"]);
         assert_eq!(p.kinks, vec!["Anal"]);
         assert_eq!(p.language, "any");
         assert!(dropped.contains(&"Robot".to_string()));
@@ -466,8 +470,9 @@ mod tests {
         assert_eq!(p.summary(Field::Gender), "Male");
         p.toggle(Field::Kinks, "Anal");
         p.toggle(Field::Kinks, "Biting");
-        p.toggle(Field::Kinks, "Musk");
-        assert_eq!(p.summary(Field::Kinks), "Anal +2");
+        assert_eq!(p.summary(Field::Kinks), "Any + 2");
+        p.toggle(Field::Kinks, ANY);
+        assert_eq!(p.summary(Field::Kinks), "Anal +1");
         assert_eq!(Preferences::default().summary(Field::Species), "—");
     }
 

@@ -9,6 +9,7 @@ pub mod drawer;
 pub mod images;
 pub mod input;
 pub mod links;
+pub mod logs;
 pub mod net;
 pub mod prefs;
 pub mod protocol;
